@@ -21,6 +21,8 @@
 
 #ifdef MUPENPLUSAPI
 #include <mupenplus/GLideN64_mupenplus.h>
+#elif defined(PROJECT64_LINUX)
+extern "C" void Project64LinuxSwapBuffers();
 #else
 #include <Graphics/OpenGLContext/windows/WindowsWGL.h>
 #endif
@@ -5284,7 +5286,11 @@ private:
 
 		void commandToExecute() override
 		{
+#ifdef PROJECT64_LINUX
+			*m_returnValue = true;
+#else
 			*m_returnValue = WindowsWGL::start();
+#endif
 		}
 
 	private:
@@ -5314,7 +5320,9 @@ private:
 
 		void commandToExecute() override
 		{
+#ifndef PROJECT64_LINUX
 			WindowsWGL::stop();
+#endif
 		}
 
 	private:
@@ -5341,7 +5349,11 @@ private:
 
 		void commandToExecute() override
 		{
+#ifdef PROJECT64_LINUX
+			Project64LinuxSwapBuffers();
+#else
 			WindowsWGL::swapBuffers();
+#endif
 			m_swapBuffersCallback();
 		}
 
