@@ -11,6 +11,8 @@
 #include <cstdlib>
 
 extern "C" void Project64LinuxSwapBuffers();
+extern "C" void Project64LinuxGfxThreadInit();
+extern "C" void Project64LinuxGfxThreadDone();
 
 using namespace opengl;
 
@@ -18,7 +20,7 @@ class DisplayWindowProject64Linux : public DisplayWindow
 {
 private:
 	bool _start() override;
-	void _stop() override {}
+	void _stop() override;
 	void _restart() override {}
 	void _swapBuffers() override;
 	void _saveScreenshot() override {}
@@ -38,11 +40,17 @@ DisplayWindow & DisplayWindow::get()
 
 bool DisplayWindowProject64Linux::_start()
 {
+	Project64LinuxGfxThreadInit();
 	FunctionWrapper::setThreadedMode(config.video.threadedVideo);
 	if (!_resizeWindow())
 		return false;
 	initGLFunctions();
 	return true;
+}
+
+void DisplayWindowProject64Linux::_stop()
+{
+	Project64LinuxGfxThreadDone();
 }
 
 void DisplayWindowProject64Linux::_swapBuffers()
