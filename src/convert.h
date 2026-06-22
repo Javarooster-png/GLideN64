@@ -13,7 +13,56 @@ extern const volatile unsigned char One2Eight[2];
 
 void UnswapCopyWrap(const u8 *src, u32 srcIdx, u8 *dest, u32 destIdx, u32 destMask, u32 numBytes);
 
+template<u32 destMask>
+static inline void UnswapCopyWrap(const u8 *src, u32 srcIdx, u8 *dest, u32 destIdx, u32 numBytes)
+{
+	u32 destLim = numBytes + destIdx;
+	if (destLim > destMask + 1) {
+		UnswapCopyWrap(src, srcIdx, dest, destIdx, destMask, numBytes);
+		return;
+	}
+
+	u32 leadingBytes = srcIdx & 3;
+	if (leadingBytes != 0) {
+		leadingBytes = 4 - leadingBytes;
+		if (leadingBytes > numBytes)
+			leadingBytes = numBytes;
+		numBytes -= leadingBytes;
+
+		srcIdx ^= 3;
+		for (u32 i = 0; i < leadingBytes; i++) {
+			dest[destIdx] = src[srcIdx];
+			++destIdx;
+			--srcIdx;
+		}
+		srcIdx += 5;
+	}
+
+	int numDWords = numBytes >> 2;
+	while (numDWords--) {
+		*reinterpret_cast<u32*>(&dest[destIdx]) = __builtin_bswap32(*reinterpret_cast<const u32*>(&src[srcIdx]));
+		destIdx += 4;
+		srcIdx += 4;
+	}
+
+	int trailingBytes = numBytes & 3;
+	if (trailingBytes) {
+		srcIdx ^= 3;
+		for (int i = 0; i < trailingBytes; i++) {
+			dest[destIdx] = src[srcIdx];
+			++destIdx;
+			--srcIdx;
+		}
+	}
+}
+
 void DWordInterleaveWrap(u32 *src, u32 srcIdx, u32 srcMask, u32 numQWords);
+
+template<u32 srcMask>
+static inline void DWordInterleaveWrap(u32 *src, u32 srcIdx, u32 numQWords)
+{
+	DWordInterleaveWrap(src, srcIdx, srcMask, numQWords);
+}
 
 inline u16 swapword( u16 value )
 {

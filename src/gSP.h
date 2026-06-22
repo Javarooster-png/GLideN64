@@ -4,16 +4,17 @@
 #include "Types.h"
 #include "GBI.h"
 #include "gDP.h"
+#include "3DMath.h"
 
-#define CHANGED_VIEWPORT		0x01U
-#define CHANGED_MATRIX			0x02U
-#define CHANGED_TEXTURE			0x04U
-#define CHANGED_GEOMETRYMODE	0x08U
-#define CHANGED_FOGPOSITION		0x10U
-#define CHANGED_LIGHT			0x20U
-#define CHANGED_LOOKAT			0x40U
-#define CHANGED_TEXTURESCALE	0x80U
-#define CHANGED_HW_LIGHT		0x100U
+#define CHANGED_VIEWPORT		0x01
+#define CHANGED_MATRIX			0x02
+#define CHANGED_TEXTURE			0x04
+#define CHANGED_GEOMETRYMODE	0x08
+#define CHANGED_FOGPOSITION		0x10
+#define CHANGED_LIGHT			0x20
+#define CHANGED_LOOKAT			0x40
+#define CHANGED_TEXTURESCALE	0x80
+#define CHANGED_HW_LIGHT		0x100
 
 #define CLIP_X      0x03
 #define CLIP_NEGX   0x01
@@ -33,14 +34,64 @@
 enum Component { R, G, B };
 enum Axis { X ,Y, Z, W };
 
+struct ColorVec
+{
+public:
+	f32& operator[] (Component c) { return val_[(size_t) c]; }
+	f32 operator[] (Component c) const { return val_[(size_t)c]; }
+	Vec& vec() { return vec_; }
+
+private:
+	union
+	{
+		Vec vec_;
+		f32 val_[4];
+	};
+};
+
+struct PosVec
+{
+public:
+	f32& operator[] (Axis c) { return val_[(size_t)c]; }
+	f32 operator[] (Axis c) const { return val_[(size_t)c]; }
+	Vec& vec() { return vec_; }
+
+private:
+	union
+	{
+		Vec vec_;
+		f32 val_[4];
+	};
+};
+
 struct SPVertex
 {
-	f32 x, y, z, w;
-	f32 nx, ny, nz, __pad0;
-	f32 r, g, b, a;
+	union
+	{
+		Vec pos;
+		struct
+		{
+			f32 x, y, z, w;
+		};
+	};
+	union
+	{
+		Vec normal;
+		struct
+		{
+			f32 nx, ny, nz, __pad0;
+		};
+	};
+	union
+	{
+		Vec color;
+		struct
+		{
+			f32 r, g, b, a;
+		};
+	};
 	f32 flat_r, flat_g, flat_b, flat_a;
 	f32 s, t;
-	f32 bc0, bc1;
 	u32 modify;
 	u8 HWLight;
 	u8 clip;
@@ -53,10 +104,10 @@ struct gSPInfo
 
 	struct
 	{
+		Mtx modelView[32];
+		Mtx projection;
+		Mtx combined;
 		u32 modelViewi, stackSize, billboard;
-		f32 modelView[32][4][4];
-		f32 projection[4][4];
-		f32 combined[4][4];
 	} matrix;
 
 	u32 objRendermode;
@@ -66,20 +117,25 @@ struct gSPInfo
 
 	struct
 	{
-		f32 rgb[12][3];
-		f32 rgb2[12][3];
-		f32 xyz[12][3];
-		f32 i_xyz[12][3];
-		f32 pos_xyzw[12][4];
+		ColorVec rgb[12];
+		PosVec xyz[12];
+		PosVec i_xyz[12];
+		PosVec pos_xyzw[12];
 		f32 ca[12], la[12], qa[12];
-		bool is_point[12];
+		u8 specularSize[12];
+		bool hasPointLight;
 	} lights;
 
 	struct
 	{
-		f32 xyz[2][3];
-		f32 i_xyz[2][3];
+		ColorVec rgb[2];
+		PosVec xyz[2];
+		PosVec i_xyz[2];
+		PosVec pos_xyzw[2];
+		f32 ca[2], la[2], qa[2];
 	} lookat;
+
+	PosVec camWorldPos;
 
 	u32 numLights;
 	bool lookatEnable;
@@ -141,6 +197,31 @@ struct gSPInfo
 		bool advancedLighting;
 	} cbfd;
 
+	struct
+	{
+		f32 amb;
+		f32 dir;
+		f32 point;
+	} ao;
+
+	struct
+	{
+		f32 scale;
+		f32 offset;
+	} fresnel;
+
+	struct
+	{
+		f32 s;
+		f32 t;
+	} attrOffset;
+
+	struct
+	{
+		s8 mode;
+		u8 thresh;
+	} alphaCompareCull;
+
 	u32 textureCoordScaleOrg;
 	u32 textureCoordScale[2];
 };
@@ -156,6 +237,7 @@ void gSPForceMatrix( u32 mptr );
 void gSPLight( u32 l, s32 n );
 void gSPLightCBFD( u32 l, s32 n );
 void gSPLookAt( u32 l, u32 n );
+void gSPCameraWorld(u32 l);
 void gSPLightAcclaim(u32 l, s32 n);
 void gSPVertex( u32 v, u32 n, u32 v0 );
 void gSPCIVertex( u32 v, u32 n, u32 v0 );
@@ -185,6 +267,14 @@ void gSPNumLights( s32 n );
 void gSPLightColor( u32 lightNum, u32 packedColor );
 void gSPFogFactor( s16 fm, s16 fo );
 void gSPPerspNormalize( u16 scale );
+void gsSPAOAmbient(u16 amb);
+void gsSPAODirectional(u16 dir);
+void gsSPAOPoint(u16 point);
+void gsSPFresnelScale(s16 scale);
+void gsSPFresnelOffset(s16 offset);
+void gsSPAttrOffsetS(u16 offset);
+void gsSPAttrOffsetT(u16 offset);
+void gsSPAlphaCompareCull(u16 cfg);
 void gSPTexture( f32 sc, f32 tc, u32 level, u32 tile, u32 on );
 void gSPEndDisplayList();
 void gSPGeometryMode( u32 clear, u32 set );
@@ -192,26 +282,26 @@ void gSPSetGeometryMode( u32 mode );
 void gSPClearGeometryMode( u32 mode );
 void gSPSetOtherMode_H(u32 _length, u32 _shift, u32 _data);
 void gSPSetOtherMode_L(u32 _length, u32 _shift, u32 _data);
-void gSPLine3D( u32 v0, u32 v1, s32 wd, u32 flag );
+void gSPLine3D(s32 v0, s32 v1, s32 flag);
+void gSPLineW3D( s32 v0, s32 v1, s32 wd, s32 flag );
 void gSPSetStatus(u32 sid, u32 val);
 void gSPSetDMAOffsets( u32 mtxoffset, u32 vtxoffset );
 void gSPSetDMATexOffset(u32 _addr);
 void gSPSetVertexColorBase( u32 base );
 void gSPCombineMatrices(u32 _mode);
 
-void gSPTriangle(u32 v0, u32 v1, u32 v2);
-void gSP1Triangle(u32 v0, u32 v1, u32 v2);
-void gSP2Triangles(const u32 v00, const u32 v01, const u32 v02, const u32 flag0,
-					const u32 v10, const u32 v11, const u32 v12, const u32 flag1 );
-void gSP4Triangles(const u32 v00, const u32 v01, const u32 v02,
-					const u32 v10, const u32 v11, const u32 v12,
-					const u32 v20, const u32 v21, const u32 v22,
-					const u32 v30, const u32 v31, const u32 v32 );
+void gSPTriangle(s32 v0, s32 v1, s32 v2);
+void gSP1Triangle(s32 v0, s32 v1, s32 v2);
+void gSP2Triangles(const s32 v00, const s32 v01, const s32 v02, const s32 flag0,
+					const s32 v10, const s32 v11, const s32 v12, const s32 flag1 );
+void gSP4Triangles(const s32 v00, const s32 v01, const s32 v02,
+					const s32 v10, const s32 v11, const s32 v12,
+					const s32 v20, const s32 v21, const s32 v22,
+					const s32 v30, const s32 v31, const s32 v32 );
 
 void gSPLightVertex(SPVertex & _vtx);
-
-extern void (*gSPTransformVector)(float vtx[4], float mtx[4][4]);
-extern void (*gSPInverseTransformVector)(float vec[3], float mtx[4][4]);
+void gSPTransformVector(Vec& vtx, Mtx mtx);
+void gSPInverseTransformVector(Vec& vec, Mtx mtx);
 void gSPSetupFunctions();
 void gSPFlushTriangles();
 #endif

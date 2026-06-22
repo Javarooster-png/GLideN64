@@ -1,4 +1,6 @@
 #include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <algorithm>
 #include <cmath>
 #include "GLideN64.h"
@@ -26,6 +28,48 @@
 using namespace std;
 
 gDPInfo gDP;
+
+static FILE * rdpTraceFile()
+{
+	static bool checked = false;
+	static FILE * trace = nullptr;
+	if (!checked) {
+		checked = true;
+		const char * enabled = getenv("PJ64_GLIDE_RDP_TRACE");
+		if (enabled != nullptr && enabled[0] != '\0' && enabled[0] != '0')
+			trace = fopen("/tmp/pj64-glide-rdp-trace.txt", "w");
+	}
+	return trace;
+}
+
+static void traceRDPTextureCommand(const char * name, u32 tile, u32 uls, u32 ult, u32 lrs, u32 lrtOrDxt, u32 address, u32 bytes, const char * note)
+{
+	FILE * trace = rdpTraceFile();
+	if (trace == nullptr)
+		return;
+
+	fprintf(trace,
+		"%s tile=%u args=%u,%u,%u,%u tex=fmt%u siz%u width%u bpl%u addr%08x loadTmem=%u loadLine=%u loadFmt%u loadSiz%u loadTile=%u address=%08x bytes=%u note=%s\n",
+		name,
+		tile,
+		uls,
+		ult,
+		lrs,
+		lrtOrDxt,
+		gDP.textureImage.format,
+		gDP.textureImage.size,
+		gDP.textureImage.width,
+		gDP.textureImage.bpl,
+		gDP.textureImage.address,
+		gDP.loadTile != nullptr ? gDP.loadTile->tmem : 0,
+		gDP.loadTile != nullptr ? gDP.loadTile->line : 0,
+		gDP.loadTile != nullptr ? gDP.loadTile->format : 0,
+		gDP.loadTile != nullptr ? gDP.loadTile->size : 0,
+		gDP.loadTileIdx,
+		address,
+		bytes,
+		note);
+}
 
 // angrylion's macro
 #define SIGN(x, numb)	(((x) & ((1 << numb) - 1)) | -((x) & (1 << (numb - 1))))
@@ -204,6 +248,7 @@ void gDPSetTextureImage(u32 format, u32 size, u32 width, u32 address)
 			gSP.DMAOffsets.tex_count = 0;
 		}
 	}
+	traceRDPTextureCommand("SetTextureImage", 0, format, size, width, 0, gDP.textureImage.address, 0, "set");
 #ifdef DEBUG_DUMP
 	DebugMsg( DEBUG_NORMAL, "gDPSetTextureImage( %s, %s, %i, 0x%08X );\n",
 		ImageFormatText[gDP.textureImage.format],
@@ -328,6 +373,7 @@ void gDPSetTile( u32 format, u32 size, u32 line, u32 tmem, u32 tile, u32 palette
 	}
 
 	gDP.changed |= CHANGED_TILE;
+	traceRDPTextureCommand("SetTile", tile, format, size, line, tmem, gDP.textureImage.address, 0, "set");
 
 #ifdef DEBUG_DUMP
 	DebugMsg( DEBUG_NORMAL, "gDPSetTile( %s, %s, %i, %i, %i, %i, %s%s, %s%s, %i, %i, %i, %i );\n",
@@ -362,6 +408,7 @@ void gDPSetTileSize( u32 tile, u32 uls, u32 ult, u32 lrs, u32 lrt )
 	gDP.tiles[tile].flrt = _FIXED2FLOAT( lrt, 2 );
 
 	gDP.changed |= CHANGED_TILE;
+	traceRDPTextureCommand("SetTileSize", tile, gDP.tiles[tile].uls, gDP.tiles[tile].ult, gDP.tiles[tile].lrs, gDP.tiles[tile].lrt, gDP.textureImage.address, 0, "set");
 
 	DebugMsg( DEBUG_NORMAL, "gDPSetTileSize( %i, %.2f, %.2f, %.2f, %.2f );\n",
 		tile,
@@ -464,6 +511,8 @@ bool CheckForFrameBufferTexture(u32 _address, u32 _width, u32 _bytes)
 //
 void gDPLoadTile32b(u32 uls, u32 ult, u32 lrs, u32 lrt)
 {
+	tmemCacheHashInvalidate();
+
 	const u32 width = lrs - uls + 1;
 	const u32 height = lrt - ult + 1;
 	const u32 line = gDP.loadTile->line << 2;
@@ -498,6 +547,7 @@ void gDPLoadTile(u32 tile, u32 uls, u32 ult, u32 lrs, u32 lrt)
 		tile, gDP.loadTile->uls, gDP.loadTile->ult, gDP.loadTile->lrs, gDP.loadTile->lrt);
 
 	if (gDP.loadTile->lrs < gDP.loadTile->uls || gDP.loadTile->lrt < gDP.loadTile->ult) {
+		traceRDPTextureCommand("LoadTile", tile, gDP.loadTile->uls, gDP.loadTile->ult, gDP.loadTile->lrs, gDP.loadTile->lrt, gDP.textureImage.address, 0, "skip-bad-size");
 		DebugMsg(DEBUG_ERROR, "gDPLoadTile is skipped because of wrong tile sizes.\n");
 		return;
 	}
@@ -540,6 +590,7 @@ void gDPLoadTile(u32 tile, u32 uls, u32 ult, u32 lrs, u32 lrt)
 		info.bytes *= 2;
 
 	if (gDP.loadTile->line == 0) {
+		traceRDPTextureCommand("LoadTile", tile, gDP.loadTile->uls, gDP.loadTile->ult, gDP.loadTile->lrs, gDP.loadTile->lrt, gDP.textureImage.address, info.bytes, "skip-line-zero");
 		DebugMsg(DEBUG_ERROR, "gDPLoadTile is skipped because tile line is zero.\n");
 		return;
 	}
@@ -562,13 +613,19 @@ void gDPLoadTile(u32 tile, u32 uls, u32 ult, u32 lrs, u32 lrt)
 	if (gDP.loadTile->lrt > gDP.scissor.lry)
 		height2 = static_cast<u32>(gDP.scissor.lry) - gDP.loadTile->ult;
 
-	if (CheckForFrameBufferTexture(address, info.width, bpl2*height2))
+	if (CheckForFrameBufferTexture(address, info.width, bpl2*height2)) {
+		traceRDPTextureCommand("LoadTile", tile, gDP.loadTile->uls, gDP.loadTile->ult, gDP.loadTile->lrs, gDP.loadTile->lrt, address, info.bytes, "framebuffer");
 		return;
+	}
 
 	if (address >= RDRAMSize) {
+		traceRDPTextureCommand("LoadTile", tile, gDP.loadTile->uls, gDP.loadTile->ult, gDP.loadTile->lrs, gDP.loadTile->lrt, address, info.bytes, "skip-rdram");
 		DebugMsg(DEBUG_ERROR, "gDPLoadTile is skipped because load address is greater than RDRAM size.\n");
 		return;
 	}
+	traceRDPTextureCommand("LoadTile", tile, gDP.loadTile->uls, gDP.loadTile->ult, gDP.loadTile->lrs, gDP.loadTile->lrt, address, info.bytes, "load");
+
+	tmemCacheHashInvalidate();
 
 	if (gDP.loadTile->size == G_IM_SIZ_32b)
 		gDPLoadTile32b(gDP.loadTile->uls, gDP.loadTile->ult, gDP.loadTile->lrs, gDP.loadTile->lrt);
@@ -578,9 +635,9 @@ void gDPLoadTile(u32 tile, u32 uls, u32 ult, u32 lrs, u32 lrt)
 		const u32 qwpr = bpr >> 3;
 		for (u32 y = 0; y < height && address < RDRAMSize; ++y) {
 			if (address + bpl > RDRAMSize)
-				UnswapCopyWrap(RDRAM, address, reinterpret_cast<u8*>(TMEM), tmemAddr << 3, 0xFFF, RDRAMSize - address);
+				UnswapCopyWrap<0xFFF>(RDRAM, address, reinterpret_cast<u8*>(TMEM), tmemAddr << 3, RDRAMSize - address);
 			else
-				UnswapCopyWrap(RDRAM, address, reinterpret_cast<u8*>(TMEM), tmemAddr << 3, 0xFFF, bpr);
+				UnswapCopyWrap<0xFFF>(RDRAM, address, reinterpret_cast<u8*>(TMEM), tmemAddr << 3, bpr);
 			if (y & 1)
 				DWordInterleaveWrap(reinterpret_cast<u32*>(TMEM), tmemAddr << 1, 0x3FF, qwpr);
 
@@ -679,22 +736,16 @@ void gDPLoadBlock(u32 tile, u32 uls, u32 ult, u32 lrs, u32 dxt)
 	u32 address = gDP.textureImage.address + ult * gDP.textureImage.bpl + (uls << gDP.textureImage.size >> 1);
 
 	if (bytes == 0 || (address + bytes) > RDRAMSize) {
+		traceRDPTextureCommand("LoadBlock", tile, uls, ult, lrs, dxt, address, bytes, "skip-rdram");
 		DebugMsg(DEBUG_NORMAL | DEBUG_ERROR, "// Attempting to load texture block out of range\n");
 		DebugMsg(DEBUG_NORMAL, "gDPLoadBlock( %i, %i, %i, %i, %i );\n", tile, uls, ult, lrs, dxt );
 		return;
 	}
+	traceRDPTextureCommand("LoadBlock", tile, uls, ult, lrs, dxt, address, bytes, "load");
 
 	gDP.loadTile->frameBufferAddress = 0;
 	CheckForFrameBufferTexture(address, info.width, bytes); // Load data to TMEM even if FB texture is found. See comment to texturedRectDepthBufferCopy
-
-	const u32 texLowerBound = gDP.loadTile->tmem;
-	const u32 texUpperBound = gDP.loadTile->tmem + (bytes >> 3);
-	for (u32 i = 0; i < tile; ++i) {
-		if (gDP.tiles[i].tmem >= texLowerBound && gDP.tiles[i].tmem < texUpperBound) {
-			gDPLoadTileInfo &info = gDP.loadInfo[gDP.tiles[i].tmem];
-			info.loadType = LOADTYPE_BLOCK;
-		}
-	}
+	tmemCacheHashInvalidate();
 
 	if (gDP.loadTile->size == G_IM_SIZ_32b)
 		gDPLoadBlock32(gDP.loadTile->uls, gDP.loadTile->lrs, dxt);
@@ -702,7 +753,7 @@ void gDPLoadBlock(u32 tile, u32 uls, u32 ult, u32 lrs, u32 dxt)
 		memcpy(TMEM, &RDRAM[address], bytes); // HACK!
 	else {
 		u32 tmemAddr = gDP.loadTile->tmem;
-		UnswapCopyWrap(RDRAM, address, reinterpret_cast<u8*>(TMEM), tmemAddr << 3, 0xFFF, bytes);
+		UnswapCopyWrap<0xFFF>(RDRAM, address, reinterpret_cast<u8*>(TMEM), tmemAddr << 3, bytes);
 		if (dxt != 0) {
 			u32 dxtCounter = 0;
 			u32 qwords = (bytes >> 3);
@@ -743,6 +794,13 @@ void gDPLoadTLUT( u32 tile, u32 uls, u32 ult, u32 lrs, u32 lrt )
 	}
 	u16 count = static_cast<u16>((gDP.tiles[tile].lrs - gDP.tiles[tile].uls + 1) * (gDP.tiles[tile].lrt - gDP.tiles[tile].ult + 1));
 	u32 address = gDP.textureImage.address + gDP.tiles[tile].ult * gDP.textureImage.bpl + (gDP.tiles[tile].uls << gDP.textureImage.size >> 1);
+	if (count == 0 || address + (u32(count) << 1) - 1 > RDRAMSize) {
+		traceRDPTextureCommand("LoadTLUT", tile, uls, ult, lrs, lrt, address, u32(count) << 1, "skip-rdram");
+		DebugMsg(DEBUG_NORMAL | DEBUG_ERROR, "gDPLoadTLUT outside RDRAM: address=%08x count=%u size=%08x\n", address, count, RDRAMSize);
+		return;
+	}
+	traceRDPTextureCommand("LoadTLUT", tile, uls, ult, lrs, lrt, address, u32(count) << 1, "load");
+	tmemCacheHashInvalidate();
 	u16 pal = static_cast<u16>((gDP.tiles[tile].tmem - 256) >> 4);
 	u16 * dest = reinterpret_cast<u16*>(TMEM);
 	u32 destIdx = gDP.tiles[tile].tmem << 2;
@@ -764,7 +822,8 @@ void gDPLoadTLUT( u32 tile, u32 uls, u32 ult, u32 lrs, u32 lrt )
 	if (TFH.isInited()) {
 		const u16 start = static_cast<u16>(gDP.tiles[tile].tmem) - 256; // starting location in the palettes
 		u16 *spal = reinterpret_cast<u16*>(RDRAM + gDP.textureImage.address);
-		memcpy(reinterpret_cast<u8*>(gDP.TexFilterPalette + start), spal, u32(count)<<1);
+		if (gDP.textureImage.address + (u32(count) << 1) - 1 <= RDRAMSize)
+			memcpy(reinterpret_cast<u8*>(gDP.TexFilterPalette + start), spal, u32(count)<<1);
 	}
 
 	gDP.changed |= CHANGED_TMEM;
@@ -800,6 +859,12 @@ void gDPSetScissor(u32 mode, s16 xh, s16 yh, s16 xl, s16 yl)
 // This performs the same thing action as gDPFillRectangle but explicitly specifying what to overwrite
 void gDPMemset(u32 value, u32 addr, u32 length)
 {
+	addr = RSP_SegmentToPhysical(addr);
+	if (addr >= RDRAMSize || length == 0)
+		return;
+	if (length > RDRAMSize - addr + 1)
+		length = RDRAMSize - addr + 1;
+
 	u32 uly = 0U, lry = 0U;
 	u32 fillColor = value;
 
@@ -1093,9 +1158,12 @@ void gDPFullSync()
 			FrameBuffer_CopyDepthBuffer(gDP.colorImage.address);
 	}
 
-	*REG.MI_INTR |= MI_INTR_DP;
-	*REG.DPC_STATUS &= ~(DPC_STATUS_PIPE_BUSY | DPC_STATUS_CMD_BUSY | DPC_STATUS_START_GCLK);
-	CheckInterrupts();
+	if (REG.MI_INTR != nullptr)
+		*REG.MI_INTR |= MI_INTR_DP;
+	if (REG.DPC_STATUS != nullptr)
+		*REG.DPC_STATUS &= ~(DPC_STATUS_PIPE_BUSY | DPC_STATUS_CMD_BUSY | DPC_STATUS_START_GCLK);
+	if (REG.MI_INTR != nullptr)
+		CheckInterrupts();
 
 	DebugMsg( DEBUG_NORMAL, "gDPFullSync();\n" );
 }

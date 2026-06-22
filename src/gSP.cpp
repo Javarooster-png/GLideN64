@@ -32,6 +32,10 @@ using namespace graphics;
 
 static bool g_ConkerUcode;
 
+static u32 gVtxLastLoadedAddress;
+static u8 gVtxLastLoadedAmount;
+static u8 gVtxLastLoadedOffset;
+
 void gSPFlushTriangles()
 {
 	if ((gSP.geometryMode & G_SHADING_SMOOTH) == 0) {
@@ -55,7 +59,7 @@ void gSPFlushTriangles()
 static
 void _gSPCombineMatrices()
 {
-	MultMatrix(gSP.matrix.projection, gSP.matrix.modelView[gSP.matrix.modelViewi], gSP.matrix.combined);
+	gSP.matrix.combined = MultMatrix(gSP.matrix.projection, gSP.matrix.modelView[gSP.matrix.modelViewi]);
 	gSP.changed &= ~CHANGED_MATRIX;
 }
 
@@ -68,7 +72,7 @@ void gSPCombineMatrices(u32 _mode)
 	DebugMsg(DEBUG_NORMAL, "gSPCombineMatrices();\n");
 }
 
-void gSPTriangle(u32 v0, u32 v1, u32 v2)
+void gSPTriangle(s32 v0, s32 v1, s32 v2)
 {
 	GraphicsDrawer & drawer = dwnd().getDrawer();
 	if ((v0 < INDEXMAP_SIZE) && (v1 < INDEXMAP_SIZE) && (v2 < INDEXMAP_SIZE)) {
@@ -80,12 +84,16 @@ void gSPTriangle(u32 v0, u32 v1, u32 v2)
 			DebugMsg(DEBUG_NORMAL, "Triangle rejected (%i, %i, %i)\n", v0, v1, v2);
 			return;
 		}
+		if (gSP.alphaCompareCull.mode && drawer.isAlphaCompareCulled(v0, v1, v2, gSP.alphaCompareCull.mode, gSP.alphaCompareCull.thresh)) {
+			DebugMsg(DEBUG_NORMAL, "Triangle alpha compare culled (%i, %i, %i)\n", v0, v1, v2);
+			return;
+		}
 		drawer.addTriangle(v0, v1, v2);
 		DebugMsg(DEBUG_NORMAL, "Triangle #%i added (%i, %i, %i)\n", gSP.tri_num++, v0, v1, v2);
 	}
 }
 
-void gSP1Triangle( const u32 v0, const u32 v1, const u32 v2)
+void gSP1Triangle( const s32 v0, const s32 v1, const s32 v2)
 {
 	DebugMsg(DEBUG_NORMAL, "gSP1Triangle (%i, %i, %i)\n", v0, v1, v2);
 
@@ -93,8 +101,8 @@ void gSP1Triangle( const u32 v0, const u32 v1, const u32 v2)
 	gSPFlushTriangles();
 }
 
-void gSP2Triangles(const u32 v00, const u32 v01, const u32 v02, const u32 flag0,
-				   const u32 v10, const u32 v11, const u32 v12, const u32 flag1 )
+void gSP2Triangles(const s32 v00, const s32 v01, const s32 v02, const s32 flag0,
+				   const s32 v10, const s32 v11, const s32 v12, const s32 flag1 )
 {
 	DebugMsg(DEBUG_NORMAL, "gSP2Triangle (%i, %i, %i)-(%i, %i, %i)\n", v00, v01, v02, v10, v11, v12);
 
@@ -103,10 +111,10 @@ void gSP2Triangles(const u32 v00, const u32 v01, const u32 v02, const u32 flag0,
 	gSPFlushTriangles();
 }
 
-void gSP4Triangles(const u32 v00, const u32 v01, const u32 v02,
-				   const u32 v10, const u32 v11, const u32 v12,
-				   const u32 v20, const u32 v21, const u32 v22,
-				   const u32 v30, const u32 v31, const u32 v32 )
+void gSP4Triangles(const s32 v00, const s32 v01, const s32 v02,
+				   const s32 v10, const s32 v11, const s32 v12,
+				   const s32 v20, const s32 v21, const s32 v22,
+				   const s32 v30, const s32 v31, const s32 v32 )
 {
 	DebugMsg(DEBUG_NORMAL, "gSP4Triangle (%i, %i, %i)-(%i, %i, %i)-(%i, %i, %i)-(%i, %i, %i)\n",
 			 v00, v01, v02, v10, v11, v12, v20, v21, v22, v30, v31, v32);
@@ -118,25 +126,30 @@ void gSP4Triangles(const u32 v00, const u32 v01, const u32 v02,
 	gSPFlushTriangles();
 }
 
-gSPInfo gSP;
-
-static
-f32 identityMatrix[4][4] =
+gSPInfo gSP
 {
-	{ 1.0f, 0.0f, 0.0f, 0.0f },
-	{ 0.0f, 1.0f, 0.0f, 0.0f },
-	{ 0.0f, 0.0f, 1.0f, 0.0f },
-	{ 0.0f, 0.0f, 0.0f, 1.0f }
+	.ao         = { 1.f, 0.625f, 0 },
+	.attrOffset = { 0x0100, -0x0100 },
+};
+
+static const Mtx identityMatrix =
+{
+	1.0f, 0.0f, 0.0f, 0.0f,
+	0.0f, 1.0f, 0.0f, 0.0f,
+	0.0f, 0.0f, 1.0f, 0.0f,
+	0.0f, 0.0f, 0.0f, 1.0f
 };
 
 void gSPLoadUcodeEx( u32 uc_start, u32 uc_dstart, u16 uc_dsize )
 {
+	gVtxLastLoadedAddress = -1;
 	gSP.matrix.modelViewi = 0;
 	gSP.status[0] = gSP.status[1] = gSP.status[2] = gSP.status[3] = 0;
 	gSP.fog.multiplier = gSP.fog.offset = 0;
 	gSP.fog.multiplierf = gSP.fog.offsetf = 0.0f;
 	gSP.geometryMode = 0U;
 	gSP.changed |= CHANGED_MATRIX | CHANGED_LIGHT | CHANGED_LOOKAT | CHANGED_GEOMETRYMODE;
+	gVtxLastLoadedAddress = -1;
 
 	if ((((uc_start & 0x1FFFFFFF) + 4096) > RDRAMSize) || (((uc_dstart & 0x1FFFFFFF) + uc_dsize) > RDRAMSize)) {
 		DebugMsg(DEBUG_NORMAL|DEBUG_ERROR, "gSPLoadUcodeEx out of RDRAM\n");
@@ -158,8 +171,7 @@ void gSPNoOp()
 
 void gSPMatrix( u32 matrix, u8 param )
 {
-
-	f32 mtx[4][4];
+	gVtxLastLoadedAddress = -1;
 	u32 address = RSP_SegmentToPhysical( matrix );
 
 	if (address + 64 > RDRAMSize) {
@@ -172,24 +184,24 @@ void gSPMatrix( u32 matrix, u8 param )
 		return;
 	}
 
-	RSP_LoadMatrix( mtx, address );
+	auto mtx = RSP_LoadMatrix( address );
 
 	if (param & G_MTX_PROJECTION) {
 		if (param & G_MTX_LOAD)
-			CopyMatrix( gSP.matrix.projection, mtx );
+			gSP.matrix.projection = mtx;
 		else
 			MultMatrix2( gSP.matrix.projection, mtx );
 	} else {
 		if ((param & G_MTX_PUSH)) {
 			if (gSP.matrix.modelViewi < (gSP.matrix.stackSize)) {
-				CopyMatrix(gSP.matrix.modelView[gSP.matrix.modelViewi + 1], gSP.matrix.modelView[gSP.matrix.modelViewi]);
+				gSP.matrix.modelView[gSP.matrix.modelViewi + 1] = gSP.matrix.modelView[gSP.matrix.modelViewi];
 				gSP.matrix.modelViewi++;
 			} else
 				DebugMsg(DEBUG_NORMAL | DEBUG_ERROR, "// Modelview stack overflow\n");
 		}
 
 		if (param & G_MTX_LOAD)
-			CopyMatrix( gSP.matrix.modelView[gSP.matrix.modelViewi], mtx );
+			gSP.matrix.modelView[gSP.matrix.modelViewi] = mtx;
 		else
 			MultMatrix2( gSP.matrix.modelView[gSP.matrix.modelViewi], mtx );
 		gSP.changed |= CHANGED_LIGHT | CHANGED_LOOKAT;
@@ -214,7 +226,7 @@ void gSPMatrix( u32 matrix, u8 param )
 
 void gSPDMAMatrix( u32 matrix, u8 index, u8 multiply )
 {
-	f32 mtx[4][4];
+	gVtxLastLoadedAddress = -1;
 	u32 address = gSP.DMAOffsets.mtx + RSP_SegmentToPhysical( matrix );
 
 	if (address + 64 > RDRAMSize) {
@@ -224,16 +236,16 @@ void gSPDMAMatrix( u32 matrix, u8 index, u8 multiply )
 		return;
 	}
 
-	RSP_LoadMatrix(mtx, address);
+	auto mtx = RSP_LoadMatrix(address);
 
 	gSP.matrix.modelViewi = index;
 
 	if (multiply)
-		MultMatrix(gSP.matrix.modelView[0], mtx, gSP.matrix.modelView[gSP.matrix.modelViewi]);
+		gSP.matrix.modelView[gSP.matrix.modelViewi] = MultMatrix(gSP.matrix.modelView[0], mtx);
 	else
-		CopyMatrix( gSP.matrix.modelView[gSP.matrix.modelViewi], mtx );
+		gSP.matrix.modelView[gSP.matrix.modelViewi] = mtx;
 
-	CopyMatrix( gSP.matrix.projection, identityMatrix );
+	gSP.matrix.projection = identityMatrix;
 
 
 	gSP.changed |= CHANGED_MATRIX | CHANGED_LIGHT | CHANGED_LOOKAT;
@@ -271,10 +283,13 @@ void gSPViewport( u32 v )
 	gSP.viewport.vtrans[2] = _FIXED2FLOAT( *(s16*)&RDRAM[address + 14], 10 );// * 0.00097847357f;
 	gSP.viewport.vtrans[3] = *(s16*)&RDRAM[address + 12];
 
-	if (gSP.viewport.vscale[1] < 0.0f) {
-		if (!GBI.isNegativeY()) {
+	if (gSP.viewport.vscale[1] < 0.0f)
+	{
+		if (!GBI.isNegativeY())
+		{
 			gSP.viewport.vscale[1] = -gSP.viewport.vscale[1];
-			if (F3DEX3 == GBI.getMicrocodeType()) {
+			if (GBI.getMicrocodeType() == F3DEX3)
+			{
 				gSP.viewport.vscale[2] /= (G_F3DEX3_NEW_MAXZ / 2) / 511.f;
 				gSP.viewport.vtrans[2] /= (G_F3DEX3_NEW_MAXZ / 2) / 511.f;
 			}
@@ -297,6 +312,7 @@ void gSPViewport( u32 v )
 
 void gSPForceMatrix( u32 mptr )
 {
+	gVtxLastLoadedAddress = -1;
 	u32 address = RSP_SegmentToPhysical( mptr );
 
 	if (address + 64 > RDRAMSize) {
@@ -305,7 +321,7 @@ void gSPForceMatrix( u32 mptr )
 		return;
 	}
 
-	RSP_LoadMatrix(gSP.matrix.combined, address);
+	gSP.matrix.combined = RSP_LoadMatrix(address);
 
 	gSP.changed &= ~CHANGED_MATRIX;
 
@@ -314,6 +330,7 @@ void gSPForceMatrix( u32 mptr )
 
 void gSPLight( u32 l, s32 n )
 {
+	gVtxLastLoadedAddress = -1;
 	--n;
 	u32 addrByte = RSP_SegmentToPhysical( l );
 
@@ -329,17 +346,20 @@ void gSPLight( u32 l, s32 n )
 		gSP.lights.rgb[n][R] = _FIXED2FLOATCOLOR(light->r,8);
 		gSP.lights.rgb[n][G] = _FIXED2FLOATCOLOR(light->g,8);
 		gSP.lights.rgb[n][B] = _FIXED2FLOATCOLOR(light->b,8);
-		gSP.lights.rgb2[n][R] = _FIXED2FLOATCOLOR(light->r2, 8);
-		gSP.lights.rgb2[n][G] = _FIXED2FLOATCOLOR(light->g2, 8);
-		gSP.lights.rgb2[n][B] = _FIXED2FLOATCOLOR(light->b2, 8);
 
 		gSP.lights.xyz[n][X] = light->x;
 		gSP.lights.xyz[n][Y] = light->y;
 		gSP.lights.xyz[n][Z] = light->z;
 
-		gSP.lights.is_point[n] = 0 != light->type;
-
-		Normalize( gSP.lights.xyz[n] );
+		if (GBI.getMicrocodeType() == F3DEX3)
+		{
+			gSP.lights.xyz[n].vec() /= 127.f;
+		}
+		else
+		{
+			// TODO: Why exactly is this needed? i_xyz will be already normalized...
+			Normalize(gSP.lights.xyz[n].vec());
+		}
 		u32 addrShort = addrByte >> 1;
 		gSP.lights.pos_xyzw[n][X] = (float)(((short*)RDRAM)[(addrShort+4)^1]);
 		gSP.lights.pos_xyzw[n][Y] = (float)(((short*)RDRAM)[(addrShort+5)^1]);
@@ -347,6 +367,7 @@ void gSPLight( u32 l, s32 n )
 		gSP.lights.ca[n] = (float)(RDRAM[(addrByte +  3) ^ 3]);
 		gSP.lights.la[n] = (float)(RDRAM[(addrByte +  7) ^ 3]);
 		gSP.lights.qa[n] = (float)(RDRAM[(addrByte + 14) ^ 3]);
+		gSP.lights.specularSize[n] = RDRAM[(addrByte + 15) ^ 3];
 	}
 
 	gSP.changed |= CHANGED_LIGHT;
@@ -361,6 +382,7 @@ void gSPLight( u32 l, s32 n )
 
 void gSPLightCBFD( u32 l, s32 n )
 {
+	gVtxLastLoadedAddress = -1;
 	u32 addrByte = RSP_SegmentToPhysical( l );
 
 	if ((addrByte + sizeof( Light )) > RDRAMSize) {
@@ -375,15 +397,12 @@ void gSPLightCBFD( u32 l, s32 n )
 		gSP.lights.rgb[n][R] = _FIXED2FLOATCOLOR(light->r, 8);
 		gSP.lights.rgb[n][G] = _FIXED2FLOATCOLOR(light->g, 8);
 		gSP.lights.rgb[n][B] = _FIXED2FLOATCOLOR(light->b, 8);
-		gSP.lights.rgb2[n][R] = _FIXED2FLOATCOLOR(light->r2, 8);
-		gSP.lights.rgb2[n][G] = _FIXED2FLOATCOLOR(light->g2, 8);
-		gSP.lights.rgb2[n][B] = _FIXED2FLOATCOLOR(light->b2, 8);
 
 		gSP.lights.xyz[n][X] = light->x;
 		gSP.lights.xyz[n][Y] = light->y;
 		gSP.lights.xyz[n][Z] = light->z;
 
-		Normalize( gSP.lights.xyz[n] );
+		Normalize( gSP.lights.xyz[n].vec() );
 		u32 addrShort = addrByte >> 1;
 		gSP.lights.pos_xyzw[n][X] = (float)(((short*)RDRAM)[(addrShort+16)^1]);
 		gSP.lights.pos_xyzw[n][Y] = (float)(((short*)RDRAM)[(addrShort+17)^1]);
@@ -403,6 +422,7 @@ void gSPLightCBFD( u32 l, s32 n )
 
 void gSPLightAcclaim(u32 l, s32 n)
 {
+	gVtxLastLoadedAddress = -1;
 	u32 addrByte = RSP_SegmentToPhysical(l);
 
 	if (n < 10) {
@@ -416,9 +436,6 @@ void gSPLightAcclaim(u32 l, s32 n)
 		gSP.lights.rgb[n][R] = _FIXED2FLOATCOLOR((RDRAM[(addrByte + 6) ^ 3]), 8);
 		gSP.lights.rgb[n][G] = _FIXED2FLOATCOLOR((RDRAM[(addrByte + 7) ^ 3]), 8);
 		gSP.lights.rgb[n][B] = _FIXED2FLOATCOLOR((RDRAM[(addrByte + 8) ^ 3]), 8);
-		gSP.lights.rgb2[n][R] = gSP.lights.rgb[n][R];
-		gSP.lights.rgb2[n][G] = gSP.lights.rgb[n][G];
-		gSP.lights.rgb2[n][B] = gSP.lights.rgb[n][B];
 	}
 
 	gSP.changed |= CHANGED_LIGHT;
@@ -428,6 +445,7 @@ void gSPLightAcclaim(u32 l, s32 n)
 
 void gSPLookAt( u32 _l, u32 _n )
 {
+	gVtxLastLoadedAddress = -1;
 	u32 address = RSP_SegmentToPhysical(_l);
 
 	if ((address + sizeof(Light)) > RDRAMSize) {
@@ -445,16 +463,43 @@ void gSPLookAt( u32 _l, u32 _n )
 
 	gSP.lookatEnable = (_n == 0) || (_n == 1 && (light->x != 0 || light->y != 0));
 
-	Normalize(gSP.lookat.xyz[_n]);
+	Normalize(gSP.lookat.xyz[_n].vec());
 	gSP.changed |= CHANGED_LOOKAT;
 	DebugMsg(DEBUG_NORMAL, "gSPLookAt( 0x%08X, LOOKAT_%i );\n", _l, _n);
+}
+
+void gSPCameraWorld( u32 _l )
+{
+	gVtxLastLoadedAddress = -1;
+	u32 address = RSP_SegmentToPhysical(_l);
+
+	if ((address + sizeof(Light)) > RDRAMSize) {
+		DebugMsg(DEBUG_NORMAL | DEBUG_ERROR, "// Attempting to load light from invalid address\n");
+		DebugMsg(DEBUG_NORMAL, "gSPCameraWorld( 0x%08X );\n", _l);
+		return;
+	}
+
+	SWVertex* light = (SWVertex*)&RDRAM[address];
+
+	gSP.camWorldPos[X] = light->x;
+	gSP.camWorldPos[Y] = light->y;
+	gSP.camWorldPos[Z] = light->z;
+
+	DebugMsg(DEBUG_NORMAL, "gSPCameraWorld( 0x%08X );\n", _l);
 }
 
 static
 void gSPUpdateLightVectors()
 {
-	InverseTransformVectorNormalizeN(&gSP.lights.xyz[0], &gSP.lights.i_xyz[0],
+	InverseTransformVectorNormalizeN(&gSP.lights.xyz[0].vec(), &gSP.lights.i_xyz[0].vec(),
 			gSP.matrix.modelView[gSP.matrix.modelViewi], gSP.numLights);
+	gSP.lights.hasPointLight = false;
+	for (u32 i = 0; i < gSP.numLights; ++i) {
+		if (gSP.lights.ca[i] != 0.0f) {
+			gSP.lights.hasPointLight = true;
+			break;
+		}
+	}
 	gSP.changed ^= CHANGED_LIGHT;
 	gSP.changed |= CHANGED_HW_LIGHT;
 }
@@ -463,7 +508,7 @@ static
 void gSPUpdateLookatVectors()
 {
 	if (gSP.lookatEnable) {
-		InverseTransformVectorNormalizeN(&gSP.lookat.xyz[0], &gSP.lookat.i_xyz[0],
+		InverseTransformVectorNormalizeN(&gSP.lookat.xyz[0].vec(), &gSP.lookat.i_xyz[0].vec(),
 				gSP.matrix.modelView[gSP.matrix.modelViewi], 2);
 	}
 	gSP.changed ^= CHANGED_LOOKAT;
@@ -472,7 +517,7 @@ void gSPUpdateLookatVectors()
 /*---------------------------------Vertex Load------------------------------------*/
 
 static
-void gSPTransformVector_default(float vtx[4], float mtx[4][4])
+void gSPTransformVector(Vec& vtx, Mtx mtx)
 {
 	const float x = vtx[0];
 	const float y = vtx[1];
@@ -485,7 +530,7 @@ void gSPTransformVector_default(float vtx[4], float mtx[4][4])
 }
 
 static
-void gSPInverseTransformVector_default(float vec[3], float mtx[4][4])
+void gSPInverseTransformVector(Vec& vec, Mtx mtx)
 {
 	const float x = vec[0];
 	const float y = vec[1];
@@ -496,42 +541,40 @@ void gSPInverseTransformVector_default(float vec[3], float mtx[4][4])
 	vec[2] = mtx[2][0] * x + mtx[2][1] * y + mtx[2][2] * z;
 }
 
-static void processDirectionalLight(const bool useFirstColor, u32 i, SPVertex& vtx)
+static void processStandardLight(u32 i, SPVertex& vtx)
 {
-	const f32 intensity = DotProduct( &vtx.nx, gSP.lights.i_xyz[i] );
+#if 0
+	const f32 intensity = DotProduct(vtx.normal, gSP.lights.i_xyz[i].vec());
 	if (intensity > 0.0f) {
-		const float* pColor = useFirstColor ? gSP.lights.rgb[i] : gSP.lights.rgb2[i];
-		vtx.r += pColor[R] * intensity;
-		vtx.g += pColor[G] * intensity;
-		vtx.b += pColor[B] * intensity;
+		vtx.color += gSP.lights.rgb[i].vec() * intensity;
 	}
+#else
+	const Vec intensity = DotProductV(vtx.normal, gSP.lights.i_xyz[i].vec());
+	vtx.color += intensity > 0.0f ? gSP.lights.rgb[i].vec() * intensity : 0.0f;
+#endif
 }
 
 template <u32 VNUM>
-void gSPLightVertexStandard(u32 v, SPVertex * spVtx)
+void gSPLightVertexStandard(u32 v, SPVertex * __restrict spVtx)
 {
 #ifndef __NEON_OPT
 	if (!isHWLightingAllowed()) {
 		for(int j = 0; j < VNUM; ++j) {
 			SPVertex & vtx = spVtx[v+j];
-			const bool useFirstColor = ((v + j) & 1) == 0;
-			const float* pColor = useFirstColor ? gSP.lights.rgb[gSP.numLights] : gSP.lights.rgb2[gSP.numLights];
-			vtx.r = pColor[R];
-			vtx.g = pColor[G];
-			vtx.b = pColor[B];
+			f32 a = vtx.a;
+			vtx.color = gSP.lights.rgb[gSP.numLights].vec();
+			vtx.a = a;
 			vtx.HWLight = 0;
 
 			for (u32 i = 0; i < gSP.numLights; ++i) {
-				processDirectionalLight(useFirstColor, i, vtx);
+				processStandardLight(i, vtx);
 			}
-			vtx.r = min(1.0f, vtx.r);
-			vtx.g = min(1.0f, vtx.g);
-			vtx.b = min(1.0f, vtx.b);
+			vtx.color = vtx.color < 1.f ? vtx.color : 1.f;
 		}
 	} else {
 		for(int j = 0; j < VNUM; ++j) {
 			SPVertex & vtx = spVtx[v+j];
-			TransformVectorNormalize(&vtx.r, gSP.matrix.modelView[gSP.matrix.modelViewi]);
+			TransformVectorNormalize(vtx.color, gSP.matrix.modelView[gSP.matrix.modelViewi]);
 			vtx.HWLight = gSP.numLights;
 		}
 	}
@@ -542,7 +585,7 @@ void gSPLightVertexStandard(u32 v, SPVertex * spVtx)
 }
 
 template <u32 VNUM>
-void gSPLightVertexCBFD_basic(u32 v, SPVertex * spVtx)
+void gSPLightVertexCBFD_basic(u32 v, SPVertex * __restrict spVtx)
 {
 	for (int j = 0; j < VNUM; ++j) {
 		SPVertex & vtx = spVtx[v + j];
@@ -583,7 +626,7 @@ void gSPLightVertexCBFD_basic(u32 v, SPVertex * spVtx)
 }
 
 template <u32 VNUM>
-void gSPLightVertexCBFD_advanced(u32 v, SPVertex * spVtx)
+void gSPLightVertexCBFD_advanced(u32 v, SPVertex * __restrict spVtx)
 {
 	for (int j = 0; j < VNUM; ++j) {
 		SPVertex & vtx = spVtx[v + j];
@@ -601,7 +644,7 @@ void gSPLightVertexCBFD_advanced(u32 v, SPVertex * spVtx)
 		f32 g = gSP.lights.rgb[l][G];
 		f32 b = gSP.lights.rgb[l][B];
 		--l;
-		f32 intensity = std::min(1.0f, DotProduct(&vtx.nx, gSP.lights.i_xyz[l]));
+		f32 intensity = std::min(1.0f, DotProduct(vtx.normal, gSP.lights.i_xyz[l].vec()));
 		if (intensity > 0.0f) {
 			r += gSP.lights.rgb[l][R] * intensity;
 			g += gSP.lights.rgb[l][G] * intensity;
@@ -615,7 +658,7 @@ void gSPLightVertexCBFD_advanced(u32 v, SPVertex * spVtx)
 			const f32 len = 2.0f * (vx*vx + vy*vy + vz*vz) * FIXED2FLOATRECIP16;
 			intensity = std::min(1.0f, gSP.lights.ca[l] / len);
 			if ((gSP.geometryMode & G_POINT_LIGHTING) != 0)
-				intensity *= std::min(1.0f, DotProduct(&vtx.nx, gSP.lights.i_xyz[l]));;
+				intensity *= std::min(1.0f, DotProduct(vtx.normal, gSP.lights.i_xyz[l].vec()));;
 			if (intensity > 0.0f) {
 				r += gSP.lights.rgb[l][R] * intensity;
 				g += gSP.lights.rgb[l][G] * intensity;
@@ -634,7 +677,7 @@ void gSPLightVertexCBFD_advanced(u32 v, SPVertex * spVtx)
 }
 
 template <u32 VNUM>
-void gSPLightVertex(u32 _v, SPVertex * _spVtx)
+void gSPLightVertex(u32 _v, SPVertex * __restrict _spVtx)
 {
 	if (g_ConkerUcode) {
 		if (gSP.cbfd.advancedLighting)
@@ -645,21 +688,21 @@ void gSPLightVertex(u32 _v, SPVertex * _spVtx)
 		gSPLightVertexStandard<VNUM>(_v, _spVtx);
 }
 
-void gSPLightVertex(SPVertex & _vtx)
+void gSPLightVertex(SPVertex & __restrict _vtx)
 {
 	gSPLightVertex<1>(0, &_vtx);
 }
 
-static void processPointLight(u32 l, const float* vecPos, SPVertex& vtx)
+static void processPointLight(u32 l, Vec& _vecPos, SPVertex& __restrict vtx)
 {
-	f32 intensity;
+	f32 intensity = 0.0f;
 	if (gSP.lights.ca[l] != 0.0f) {
 		f32 recip = FIXED2FLOATRECIP16;
 		// Point lighting
-		f32 lvec[3] = { gSP.lights.pos_xyzw[l][X], gSP.lights.pos_xyzw[l][Y], gSP.lights.pos_xyzw[l][Z] };
-		lvec[0] -= vecPos[0];
-		lvec[1] -= vecPos[1];
-		lvec[2] -= vecPos[2];
+		Vec lvec = { gSP.lights.pos_xyzw[l][X], gSP.lights.pos_xyzw[l][Y], gSP.lights.pos_xyzw[l][Z] };
+		lvec[0] -= _vecPos[0];
+		lvec[1] -= _vecPos[1];
+		lvec[2] -= _vecPos[2];
 
 		const f32 K = lvec[0] * lvec[0] + lvec[1] * lvec[1] + lvec[2] * lvec[2] * 2.0f;
 		const f32 KS = sqrtf(K);
@@ -683,9 +726,10 @@ static void processPointLight(u32 l, const float* vecPos, SPVertex& vtx)
 		const f32 KSF = floorf(KS);
 		const f32 D = (KSF * gSP.lights.la[l] * 2.0f + KSF * KSF * gSP.lights.qa[l] / 8.0f) * recip + 1.0f;
 		intensity = V / D;
-	} else {
+	}
+	else {
 		// Standard lighting
-		intensity = DotProduct(&vtx.nx, gSP.lights.i_xyz[l]);
+		intensity = DotProduct(vtx.normal, gSP.lights.i_xyz[l].vec());
 	}
 	if (intensity > 0.0f) {
 		vtx.r += gSP.lights.rgb[l][R] * intensity;
@@ -694,8 +738,267 @@ static void processPointLight(u32 l, const float* vecPos, SPVertex& vtx)
 	}
 }
 
+static Vec unpackNormal(u16 packedNormal)
+{
+	Vec result{};
+	if (GBI.f3dex3Version() != 0)
+	{
+		// simple unpacking of 5-6-5 format
+		u16 x = packedNormal & 0xF800;
+		u16 y = (packedNormal & 0x07E0) << 5;
+		u16 z = (packedNormal & 0x001F) << 11;
+
+		result[0] = (s16)x;
+		result[1] = (s16)y;
+		result[2] = (s16)z;
+
+		result /= 32767.f;
+	}
+	else
+	{
+		// octohedral encoding
+		u8 xo = packedNormal >> 8;
+		u8 yo = packedNormal & 0xFF;
+
+		u8 x = xo & 0x7F;
+		u8 y = yo & 0x7F;
+		s8 z = (s8)(x + y);
+
+		bool zNeg = z & 0x80;
+		u8 x2 = 0x7f - x;
+		u8 y2 = 0x7f - y;
+		z = 0x7F - z;
+		if (zNeg)
+		{
+			x = x2;
+			y = y2;
+		}
+
+		result[0] = (xo & 0x80) ? -(s8)x : x;
+		result[1] = (yo & 0x80) ? -(s8)y : y;
+		result[2] = z;
+
+		result /= 127.f;
+	}
+
+	return result;
+}
+
+static void processF3DEX3LightAdvanced(Vec color, const Vec& _vecPos, SPVertex& __restrict vtx)
+{
+	// pos is already in world space
+	Vec worldSpaceVecPos = _vecPos;
+	worldSpaceVecPos[3] = 0.f;
+
+	// ltadv_after_mtx
+	bool needFres = gSP.geometryMode & (F3DEX3_G_FRESNEL_COLOR | F3DEX3_G_FRESNEL_ALPHA);
+	bool needSpec = gSP.geometryMode & F3DEX3_G_LIGHTING_SPECULAR;
+ 	bool needAO  = gSP.geometryMode & G_AMBOCCLUSION;
+	bool needSpecFres = needFres || needSpec;
+
+	Vec worldSpaceNormal = vtx.normal;
+
+	// Compared to 'standard' lighting, 'advanced' lighting transforms the normal to world space keeping the lights untransformed.
+	// This ends up being equivalent to:
+	// TransformVectorNormalize(vtx.normal) * gSP.lights.xyz == vtx.normal * gSP.lights.i_xyz == vtx.normal * InverseTransformVectorNormalize(gSP.lights.xyz)
+	// This approach is pricier than standard lighting (per normal vs per light mtx multiplication), but it allows for correct specular and fresnel effects.
+	TransformVectorNormalize(worldSpaceNormal, gSP.matrix.modelView[gSP.matrix.modelViewi]);
+
+	f32 vtxAlpha = vtx.a;
+	f32 offsetAlpha = vtxAlpha - 1.f;
+
+	f32 ambientOcclusionAmb   = needAO ? gSP.ao.amb   : 0.f;
+	f32 ambientOcclusionDir   = needAO ? gSP.ao.dir   : 0.f;
+	u16 ambientOcclusionPoint = needAO ? gSP.ao.point : 0;
+
+	f32 ambientOcclusionFactor = 1.f + offsetAlpha * ambientOcclusionAmb;
+	vtx.color *= ambientOcclusionFactor;
+	f32 fresProd;
+
+	// ltadv_spec_fres_setup
+	if (needSpecFres)
+	{
+		// Transform the vertex to camera space for specular/fresnel calculations
+		// Use the camera world position to get the view vector
+		Vec camWorldPos = gSP.camWorldPos.vec();
+		Vec camDir = camWorldPos - worldSpaceVecPos;
+		Normalize(camDir);
+
+		fresProd = DotProduct(camDir, worldSpaceNormal);
+		if (needSpec)
+		{
+			// Specular reflects the camDir around the normal vector
+			Vec specFresProjection = worldSpaceNormal * fresProd;
+			worldSpaceNormal = 2 * specFresProjection - camDir;
+		}
+	}
+
+	// aof2 = offsetAlphaFres * gSP.ao.amb;
+
+	auto specXform = [](f32 intensity, int l) {
+		// Tricky thing! In code we have something that look like this (aDOT = intensity):
+		// vxor    aDOT, aDOT, $v31[7]    // = 0x7FFF - dot product, v31[7] = 0x7FFF
+
+		// We are interpreting intensity as an f32 but in reality it is a fixed point number from -1 to 1.
+		// Here are some of the examples of this mapping and translation to f32s:
+		// 0            = 0x0000 -> 0x7fff = 1.f
+		// 0.2          = 0x1fff -> 0x6000 = 0.8f
+		// 1            = 0x7fff -> 0x0000 = 0.f
+		// 1 / 32767.f  = 0x0001 -> 0x7ffe = 1.f - (1 / 32767.f)
+		// -1 / 32767.f = 0xffff -> 0x8000 = -1.f
+		// -1.f         = 0x8000 -> 0xffff = -(1 / 32767.f)
+		// -1 / 32767.f = 0x8001 -> 0xfffe = -(2 / 32767.f)
+		// -0.2f        = 0x9fff -> 0xe000 = -(0.8f)
+
+		// Hence the aforementioned transform will look like this:
+		auto xorXform = [](f32 value) {
+			if (value >= 0.f)
+				return 1.f - value;
+			else
+				return -1.f - value;
+			};
+
+		f32 dotInvert = xorXform(intensity);
+		f32 dotScaled = dotInvert * gSP.lights.specularSize[l];
+		intensity = xorXform(std::clamp(dotScaled, -1.f, 1.f));
+		return intensity;
+	};
+
+	// ltadv_loop
+	for (u32 l = 0; l < gSP.numLights; ++l) {
+		f32 intensity = 0.0f;
+		if (gSP.lights.ca[l] != 0.0f) {
+			f32 recip = FIXED2FLOATRECIP16;
+			// Point lighting
+			// Note that this piece of code is reused from 'needSpecFres' part above
+			Vec lvec = { gSP.lights.pos_xyzw[l][X], gSP.lights.pos_xyzw[l][Y], gSP.lights.pos_xyzw[l][Z] };
+			lvec -= worldSpaceVecPos;
+
+			const f32 K = lvec[0] * lvec[0] + lvec[1] * lvec[1] + lvec[2] * lvec[2];
+			const f32 KS = sqrtf(K);
+			lvec /= KS;
+
+			f32 V = DotProduct(lvec, worldSpaceNormal);
+			if (needSpec)
+			{
+				V = specXform(V, l);
+			}
+
+			const f32 KSF = floorf(KS);
+			// TODO: verify these constants, they might be different
+			const f32 D = (gSP.lights.ca[l] + KSF * gSP.lights.la[l] * 2.0f + KSF * KSF * gSP.lights.qa[l] / 8.0f) * recip + 1.0f;
+			intensity = V / D;
+
+			f32 aof = 1.f + offsetAlpha * ambientOcclusionPoint;
+			intensity *= aof;
+		}
+		else
+		{
+			// Standard lighting with respect to world space normal
+			intensity = DotProduct(worldSpaceNormal, gSP.lights.xyz[l].vec());
+			intensity = std::clamp(intensity, -1.f, 1.f);
+
+			if (needSpec)
+			{
+				intensity = specXform(intensity, l);
+			}
+
+			f32 aof = 1.f + offsetAlpha * ambientOcclusionDir;
+			intensity *= aof;
+		}
+
+		if (intensity > 0.0f) {
+			vtx.r += gSP.lights.rgb[l][R] * intensity;
+			vtx.g += gSP.lights.rgb[l][G] * intensity;
+			vtx.b += gSP.lights.rgb[l][B] * intensity;
+		}
+	}
+
+	if (vtx.r > 1.0f) vtx.r = 1.0f;
+	if (vtx.g > 1.0f) vtx.g = 1.0f;
+	if (vtx.b > 1.0f) vtx.b = 1.0f;
+
+	if (gSP.geometryMode & F3DEX3_G_PACKED_NORMALS)
+	{
+		vtx.color *= color;
+	}
+
+	if (gSP.geometryMode & F3DEX3_G_LIGHTTOALPHA)
+	{
+		vtx.a = std::max(vtx.r, std::max(vtx.g, vtx.b));
+	}
+	else
+	{
+		vtx.a = vtxAlpha;
+	}
+
+	if (needFres)
+	{
+		f32 factor = gSP.fresnel.scale * fabsf(fresProd) + gSP.fresnel.offset;
+		f32 fresnel = std::clamp(factor, 0.f, 1.f);
+
+		if (!(gSP.geometryMode & F3DEX3_G_FRESNEL_COLOR))
+		{
+			vtx.a = fresnel;
+		}
+		else
+		{
+			vtx.r = vtx.g = vtx.b = fresnel;
+		}
+	}
+}
+
+static void processF3DEX3LightBasic(Vec color, SPVertex& __restrict vtx)
+{
+	bool needAO = gSP.geometryMode & G_AMBOCCLUSION;
+
+	Vec normal = vtx.normal;
+
+	f32 vtxAlpha = vtx.a;
+	f32 offsetAlpha = vtxAlpha - 1.f;
+
+	f32 ambientOcclusionAmb = needAO ? gSP.ao.amb : 0.f;
+	f32 ambientOcclusionDir = needAO ? gSP.ao.dir : 0.f;
+
+	f32 ambientOcclusionFactor = 1.f + offsetAlpha * ambientOcclusionAmb;
+	vtx.color *= ambientOcclusionFactor;
+
+	for (u32 l = 0; l < gSP.numLights; ++l) {
+		f32 intensity = DotProduct(normal, gSP.lights.i_xyz[l].vec());
+		intensity = std::clamp(intensity, -1.f, 1.f);
+
+		f32 aof = 1.f + offsetAlpha * ambientOcclusionDir;
+		intensity *= aof;
+
+		if (intensity > 0.0f) {
+			vtx.r += gSP.lights.rgb[l][R] * intensity;
+			vtx.g += gSP.lights.rgb[l][G] * intensity;
+			vtx.b += gSP.lights.rgb[l][B] * intensity;
+		}
+	}
+
+	if (vtx.r > 1.0f) vtx.r = 1.0f;
+	if (vtx.g > 1.0f) vtx.g = 1.0f;
+	if (vtx.b > 1.0f) vtx.b = 1.0f;
+
+	if (gSP.geometryMode & F3DEX3_G_PACKED_NORMALS)
+	{
+		vtx.color *= color;
+	}
+
+	if (gSP.geometryMode & F3DEX3_G_LIGHTTOALPHA)
+	{
+		vtx.a = std::max(vtx.r, std::max(vtx.g, vtx.b));
+	}
+	else
+	{
+		vtx.a = vtxAlpha;
+	}
+
+}
+
 template <u32 VNUM>
-void gSPPointLightVertexZeldaMM(u32 v, float _vecPos[VNUM][4], SPVertex * spVtx)
+void gSPPointLightVertexZeldaMM(u32 v, Vec _vecPos[VNUM], SPVertex * __restrict spVtx)
 {
 	for (int j = 0; j < VNUM; ++j) {
 		SPVertex & vtx = spVtx[v + j];
@@ -715,7 +1018,7 @@ void gSPPointLightVertexZeldaMM(u32 v, float _vecPos[VNUM][4], SPVertex * spVtx)
 }
 
 template <u32 VNUM>
-void gSPPointLightVertex(u32 _v, float _vecPos[VNUM][4], SPVertex * _spVtx)
+void gSPPointLightVertex(u32 _v, Vec _vecPos[VNUM], SPVertex * __restrict _spVtx)
 {
 	if (g_ConkerUcode) {
 		if (gSP.cbfd.advancedLighting)
@@ -727,7 +1030,7 @@ void gSPPointLightVertex(u32 _v, float _vecPos[VNUM][4], SPVertex * _spVtx)
 }
 
 template <u32 VNUM>
-void gSPPointLightVertexAcclaim(u32 v, SPVertex * spVtx)
+void gSPPointLightVertexAcclaim(u32 v, SPVertex * __restrict spVtx)
 {
 	for (int j = 0; j < VNUM; ++j) {
 		SPVertex & vtx = spVtx[v + j];
@@ -757,31 +1060,30 @@ void gSPPointLightVertexAcclaim(u32 v, SPVertex * spVtx)
 }
 
 template <u32 VNUM>
-void gSPLightVertexF3DEX3(u32 v, float _vecPos[VNUM][4], SPVertex* spVtx)
+void gSPLightVertexF3DEX3(u32 v, Vec _vecPos[VNUM], SPVertex* __restrict spVtx)
 {
 	for (int j = 0; j < VNUM; ++j) {
-		const bool useFirstColor = ((v + j) & 1) == 0;
 		SPVertex& vtx = spVtx[v + j];
 		vtx.HWLight = 0;
+		Vec color = vtx.color;
 		vtx.r = gSP.lights.rgb[gSP.numLights][R];
 		vtx.g = gSP.lights.rgb[gSP.numLights][G];
 		vtx.b = gSP.lights.rgb[gSP.numLights][B];
 		gSPTransformVector(_vecPos[j], gSP.matrix.modelView[gSP.matrix.modelViewi]);
 
-		for (u32 l = 0; l < gSP.numLights; ++l) {
-			if (gSP.lights.is_point[l])
-				processPointLight(l, _vecPos[j], vtx);
-			else
-				processDirectionalLight(useFirstColor, l, vtx);
-		}
-		if (vtx.r > 1.0f) vtx.r = 1.0f;
-		if (vtx.g > 1.0f) vtx.g = 1.0f;
-		if (vtx.b > 1.0f) vtx.b = 1.0f;
+		bool wantAdvancedLighting = GBI.f3dex3Version() == 0 
+							     || (gSP.geometryMode & (F3DEX3_G_LIGHTING_SPECULAR | F3DEX3_G_FRESNEL_COLOR | F3DEX3_G_FRESNEL_ALPHA))
+								 || gSP.lights.hasPointLight;
+
+		if (wantAdvancedLighting)
+			processF3DEX3LightAdvanced(color, _vecPos[j], vtx);
+		else
+			processF3DEX3LightBasic(color, vtx);
 	}
 }
 
 template <u32 VNUM>
-void gSPBillboardVertex(u32 v, SPVertex * spVtx)
+void gSPBillboardVertex(u32 v, SPVertex * __restrict spVtx)
 {
 #ifndef __NEON_OPT
 	SPVertex & vtx0 = spVtx[0];
@@ -810,13 +1112,11 @@ void gSPBillboardVertex(u32 v, SPVertex * spVtx)
 template <u32 VNUM>
 void gSPClipVertex(u32 v, SPVertex * spVtx)
 {
-	const f32 scale = dwnd().getAdjustScale();
 	for (u32 j = 0; j < VNUM; ++j) {
 		SPVertex & vtx = spVtx[v+j];
 		vtx.clip = 0;
-		const f32 scaledX = vtx.x * scale;
-		if (scaledX > +vtx.w) vtx.clip |= CLIP_POSX;
-		if (scaledX < -vtx.w) vtx.clip |= CLIP_NEGX;
+		if (vtx.x > +vtx.w) vtx.clip |= CLIP_POSX;
+		if (vtx.x < -vtx.w) vtx.clip |= CLIP_NEGX;
 		if (vtx.y > +vtx.w) vtx.clip |= CLIP_POSY;
 		if (vtx.y < -vtx.w) vtx.clip |= CLIP_NEGY;
 		if (vtx.w < 0.01f) vtx.clip |= CLIP_W;
@@ -824,7 +1124,7 @@ void gSPClipVertex(u32 v, SPVertex * spVtx)
 }
 
 template <u32 VNUM>
-void gSPTransformVertex(u32 v, SPVertex * spVtx, float mtx[4][4])
+void gSPTransformVertex(u32 v, SPVertex * __restrict spVtx, Mtx mtx)
 {
 #ifndef __NEON_OPT
 	float x, y, z;
@@ -833,10 +1133,7 @@ void gSPTransformVertex(u32 v, SPVertex * spVtx, float mtx[4][4])
 		x = vtx.x;
 		y = vtx.y;
 		z = vtx.z;
-		vtx.x = x * mtx[0][0] + y * mtx[1][0] + z * mtx[2][0] + mtx[3][0];
-		vtx.y = x * mtx[0][1] + y * mtx[1][1] + z * mtx[2][1] + mtx[3][1];
-		vtx.z = x * mtx[0][2] + y * mtx[1][2] + z * mtx[2][2] + mtx[3][2];
-		vtx.w = x * mtx[0][3] + y * mtx[1][3] + z * mtx[2][3] + mtx[3][3];
+		vtx.pos = x * mtx[0] + y * mtx[1] + z * mtx[2] + mtx[3];
 	}
 #else
 	void gSPTransformVector_NEON(float vtx[4], float mtx[4][4]);
@@ -848,23 +1145,57 @@ void gSPTransformVertex(u32 v, SPVertex * spVtx, float mtx[4][4])
 #endif //__NEON_OPT
 }
 
+static bool hasAcclaim()
+{
+	return !G_ATTROFFSET_ST_ENABLE && !G_AMBOCCLUSION;
+}
+
 template <u32 VNUM>
-void gSPProcessVertex(u32 v, SPVertex * spVtx)
+void gSPProcessVertex(u32 v, SPVertex * __restrict spVtx)
 {
 	if (gSP.changed & CHANGED_MATRIX)
 		_gSPCombineMatrices();
 
-	float vPos[VNUM][4];
+	Vec vPos[VNUM];
 	for(u32 i = 0; i < VNUM; ++i) {
 		SPVertex & vtx = spVtx[v+i];
-		vPos[i][0] = vtx.x;
-		vPos[i][1] = vtx.y;
-		vPos[i][2] = vtx.z;
+		vPos[i] = vtx.pos;
 		vPos[i][3] = 0.0f;
 		vtx.modify = 0;
 	}
 
 	gSPTransformVertex<VNUM>(v, spVtx, gSP.matrix.combined );
+
+	if (dwnd().isAdjustScreen() && (gDP.colorImage.width > VI.width * 98 / 100)) {
+		const f32 adjustScale = dwnd().getAdjustScale();
+		for(int i = 0; i < VNUM; ++i) {
+			SPVertex & vtx = spVtx[v+i];
+			vtx.x *= adjustScale;
+			if (gSP.matrix.projection[3][2] == -1.f)
+				vtx.w *= adjustScale;
+		}
+	}
+	if (gSP.viewport.vscale[0] < 0) {
+		for(int i = 0; i < VNUM; ++i) {
+			SPVertex & vtx = spVtx[v+i];
+			vtx.x = -vtx.x;
+		}
+	}
+	if (gSP.viewport.vscale[1] < 0) {
+		for(int i = 0; i < VNUM; ++i) {
+			SPVertex & vtx = spVtx[v+i];
+			vtx.y = -vtx.y;
+		}
+	}
+
+	if (gSP.geometryMode & G_ATTROFFSET_ST_ENABLE)
+	{
+		for (int i = 0; i < VNUM; ++i) {
+			SPVertex& vtx = spVtx[v + i];
+			vtx.s += gSP.attrOffset.s / gSP.texture.scales;
+			vtx.t += gSP.attrOffset.t / gSP.texture.scalet;
+		}
+	}
 
 	if (gSP.matrix.billboard)
 		gSPBillboardVertex<VNUM>(v, spVtx);
@@ -884,25 +1215,25 @@ void gSPProcessVertex(u32 v, SPVertex * spVtx)
 			gSPLightVertexF3DEX3<VNUM>(v, vPos, spVtx);
 		}
 
-		if (gSP.geometryMode & G_ACCLAIM_LIGHTING)
+		if (hasAcclaim() && (gSP.geometryMode & G_ACCLAIM_LIGHTING))
 			gSPPointLightVertexAcclaim<VNUM>(v, spVtx);
 
 		if ((gSP.geometryMode & G_TEXTURE_GEN) != 0) {
 			if (GBI.getMicrocodeType() != F3DFLX2) {
 				for(int i = 0; i < VNUM; ++i) {
 					SPVertex & vtx = spVtx[v+i];
-					f32 vNormale[3] = {vtx.nx, vtx.ny, vtx.nz};
+					Vec fLightDir{vtx.nx, vtx.ny, vtx.nz};
 					f32 x, y;
 					if (gSP.lookatEnable) {
-						x = DotProduct(gSP.lookat.i_xyz[0], vNormale);
-						y = DotProduct(gSP.lookat.i_xyz[1], vNormale);
+						x = DotProduct(gSP.lookat.i_xyz[0].vec(), fLightDir);
+						y = DotProduct(gSP.lookat.i_xyz[1].vec(), fLightDir);
 					} else {
-						vNormale[0] *= 128.0f;
-						vNormale[1] *= 128.0f;
-						vNormale[2] *= 128.0f;
-						TransformVectorNormalize(vNormale, gSP.matrix.modelView[gSP.matrix.modelViewi]);
-						x = vNormale[0];
-						y = vNormale[1];
+						fLightDir[0] *= 128.0f;
+						fLightDir[1] *= 128.0f;
+						fLightDir[2] *= 128.0f;
+						TransformVectorNormalize(fLightDir, gSP.matrix.modelView[gSP.matrix.modelViewi]);
+						x = fLightDir[0];
+						y = fLightDir[1];
 					}
 					if (gSP.geometryMode & G_TEXTURE_GEN_LINEAR) {
 						if (x < -1.0f) x = -1.0f;
@@ -911,7 +1242,7 @@ void gSPProcessVertex(u32 v, SPVertex * spVtx)
 						if (y > 1.0f) y = 1.0f;
 						vtx.s = acosf(-x) * 325.94931f;
 						vtx.t = acosf(-y) * 325.94931f;
-					} else {
+					} else { // G_TEXTURE_GEN
 						vtx.s = (x + 1.0f) * 512.0f;
 						vtx.t = (y + 1.0f) * 512.0f;
 					}
@@ -919,17 +1250,25 @@ void gSPProcessVertex(u32 v, SPVertex * spVtx)
 			} else {
 				for(int i = 0; i < VNUM; ++i) {
 					SPVertex & vtx = spVtx[v+i];
-					const f32 intensity = DotProduct(gSP.lookat.i_xyz[0], &vtx.nx) * 128.0f;
+					const f32 intensity = DotProduct(gSP.lookat.i_xyz[0].vec(), vtx.normal) * 128.0f;
 					const s16 index = static_cast<s16>(intensity);
 					vtx.a = _FIXED2FLOATCOLOR(RDRAM[(gSP.DMAIO_address + 128 + index) ^ 3], 8);
 				}
 			}
 		}
-	} else if (gSP.geometryMode & G_ACCLAIM_LIGHTING) {
+	} else if (hasAcclaim() && (gSP.geometryMode & G_ACCLAIM_LIGHTING)) {
 		gSPPointLightVertexAcclaim<VNUM>(v, spVtx);
 	} else {
 		for(u32 i = 0; i < VNUM; ++i)
 			spVtx[v].HWLight = 0;
+	}
+
+	if (gSP.geometryMode & G_ATTROFFSET_ST_ENABLE) {
+		for (int i = 0; i < VNUM; ++i) {
+			SPVertex& vtx = spVtx[v + i];
+			vtx.s += gSP.attrOffset.s / gSP.texture.scales;
+			vtx.t += gSP.attrOffset.t / gSP.texture.scalet;
+		}
 	}
 
 	for(u32 i = 0; i < VNUM; ++i) {
@@ -940,7 +1279,7 @@ void gSPProcessVertex(u32 v, SPVertex * spVtx)
 }
 
 template <u32 VNUM>
-u32 gSPLoadVertexData(const Vertex *orgVtx, SPVertex * spVtx, u32 v0, u32 vi, u32 n)
+u32 gSPLoadVertexData(const Vertex * __restrict orgVtx, SPVertex * __restrict spVtx, u32 v0, u32 vi, u32 n)
 {
 	const u32 end = n - (n%VNUM) + v0;
 	for (; vi < end; vi += VNUM) {
@@ -954,15 +1293,27 @@ u32 gSPLoadVertexData(const Vertex *orgVtx, SPVertex * spVtx, u32 v0, u32 vi, u3
 			vtx.t = _FIXED2FLOAT( orgVtx->t, 5 );
 
 			if (gSP.geometryMode & G_LIGHTING) {
-				vtx.nx = _FIXED2FLOATCOLOR(orgVtx->normal.x, 7);
-				vtx.ny = _FIXED2FLOATCOLOR(orgVtx->normal.y, 7);
-				vtx.nz = _FIXED2FLOATCOLOR(orgVtx->normal.z, 7);
-				if (isHWLightingAllowed()) {
-					vtx.r = orgVtx->normal.x;
-					vtx.g = orgVtx->normal.y;
-					vtx.b = orgVtx->normal.z;
+				if (gSP.geometryMode & F3DEX3_G_PACKED_NORMALS)
+				{
+					vtx.normal = unpackNormal(orgVtx->flag);
+					// RGB will be set in the if condition below
 				}
-			} else {
+				else
+				{
+					vtx.nx = _FIXED2FLOATCOLOR(orgVtx->normal.x, 7);
+					vtx.ny = _FIXED2FLOATCOLOR(orgVtx->normal.y, 7);
+					vtx.nz = _FIXED2FLOATCOLOR(orgVtx->normal.z, 7);
+					if (isHWLightingAllowed()) {
+						vtx.r = orgVtx->normal.x;
+						vtx.g = orgVtx->normal.y;
+						vtx.b = orgVtx->normal.z;
+					}
+				}
+			}
+
+			if (!(gSP.geometryMode & G_LIGHTING)
+			 || ((gSP.geometryMode & G_LIGHTING) && (gSP.geometryMode & F3DEX3_G_PACKED_NORMALS)))
+			{
 				vtx.r = _FIXED2FLOATCOLOR(orgVtx->color.r, 8);
 				vtx.g = _FIXED2FLOATCOLOR(orgVtx->color.g, 8);
 				vtx.b = _FIXED2FLOATCOLOR(orgVtx->color.b, 8);
@@ -981,7 +1332,7 @@ void gSPVertex(u32 a, u32 n, u32 v0)
 	DebugMsg(DEBUG_NORMAL, "gSPVertex n = %i, v0 = %i, from %08x\n", n, v0, a);
 
 	if ((n + v0) > INDEXMAP_SIZE) {
-		LOG(LOG_ERROR, "Using Vertex outside buffer v0=%i, n=%i", v0, n);
+		LOG(LOG_ERROR, "Using Vertex outside buffer v0=%i, n=%i\n", v0, n);
 		DebugMsg(DEBUG_NORMAL | DEBUG_ERROR, "//Using Vertex outside buffer v0 = %i, n = %i\n", v0, n);
 		return;
 	}
@@ -1002,15 +1353,22 @@ void gSPVertex(u32 a, u32 n, u32 v0)
 			gSPUpdateLookatVectors();
 	}
 
+	if (address == gVtxLastLoadedAddress && n == gVtxLastLoadedAmount && v0 == gVtxLastLoadedOffset)
+		return;
+
 	const Vertex *vertex = (Vertex*)&RDRAM[address];
 	SPVertex * spVtx = dwnd().getDrawer().getVertexPtr(0);
 	u32 i = gSPLoadVertexData<VEC_OPT>(vertex, spVtx, v0, v0, n);
 	if (i < n + v0)
 		gSPLoadVertexData<1>(vertex + (i - v0), spVtx, v0, i, n);
+
+	gVtxLastLoadedAddress = address;
+	gVtxLastLoadedAmount = n;
+	gVtxLastLoadedOffset = v0;
 }
 
 template <u32 VNUM>
-u32 gSPLoadCIVertexData(const PDVertex *orgVtx, SPVertex * spVtx, u32 v0, u32 vi, u32 n)
+u32 gSPLoadCIVertexData(const PDVertex * __restrict orgVtx, SPVertex * __restrict spVtx, u32 v0, u32 vi, u32 n)
 {
 	const u32 end = n - (n%VNUM) + v0;
 	for (; vi < end; vi += VNUM) {
@@ -1051,7 +1409,7 @@ void gSPCIVertex( u32 a, u32 n, u32 v0 )
 	DebugMsg(DEBUG_NORMAL, "gSPCIVertex n = %i, v0 = %i, from %08x\n", n, v0, a);
 
 	if ((n + v0) > INDEXMAP_SIZE) {
-		LOG(LOG_ERROR, "Using Vertex outside buffer v0=%i, n=%i", v0, n);
+		LOG(LOG_ERROR, "Using Vertex outside buffer v0=%i, n=%i\n", v0, n);
 		DebugMsg(DEBUG_NORMAL | DEBUG_ERROR, "//Using Vertex outside buffer v0 = %i, n = %i\n", v0, n);
 		return;
 	}
@@ -1079,7 +1437,7 @@ void gSPCIVertex( u32 a, u32 n, u32 v0 )
 
 
 template <u32 VNUM>
-u32 gSPLoadDMAVertexData(u32 address, SPVertex * spVtx, u32 v0, u32 vi, u32 n)
+u32 gSPLoadDMAVertexData(u32 address, SPVertex * __restrict spVtx, u32 v0, u32 vi, u32 n)
 {
 	const u32 end = n - (n%VNUM) + v0;
 	for (; vi < end; vi += VNUM) {
@@ -1106,7 +1464,7 @@ void gSPDMAVertex( u32 a, u32 n, u32 v0 )
 	DebugMsg(DEBUG_NORMAL, "gSPDMAVertex n = %i, v0 = %i, from %08x\n", n, v0, a);
 
 	if ((n + v0) > INDEXMAP_SIZE) {
-		LOG(LOG_ERROR, "Using Vertex outside buffer v0=%i, n=%i", v0, n);
+		LOG(LOG_ERROR, "Using Vertex outside buffer v0=%i, n=%i\n", v0, n);
 		DebugMsg(DEBUG_NORMAL | DEBUG_ERROR, "//Using Vertex outside buffer v0 = %i, n = %i\n", v0, n);
 		return;
 	}
@@ -1123,7 +1481,7 @@ void gSPDMAVertex( u32 a, u32 n, u32 v0 )
 }
 
 template <u32 VNUM>
-u32 gSPLoadCBFDVertexData(const Vertex *orgVtx, SPVertex * spVtx, u32 v0, u32 vi, u32 n)
+u32 gSPLoadCBFDVertexData(const Vertex * __restrict orgVtx, SPVertex * __restrict spVtx, u32 v0, u32 vi, u32 n)
 {
 	const u32 end = n - (n%VNUM) + v0;
 	for (; vi < end; vi += VNUM) {
@@ -1157,7 +1515,7 @@ void gSPCBFDVertex( u32 a, u32 n, u32 v0 )
 	DebugMsg(DEBUG_NORMAL, "gSPCBFDVertex n = %i, v0 = %i, from %08x\n", n, v0, a);
 
 	if ((n + v0) > INDEXMAP_SIZE) {
-		LOG(LOG_ERROR, "Using Vertex outside buffer v0=%i, n=%i", v0, n);
+		LOG(LOG_ERROR, "Using Vertex outside buffer v0=%i, n=%i\n", v0, n);
 		DebugMsg(DEBUG_NORMAL | DEBUG_ERROR, "//Using Vertex outside buffer v0 = %i, n = %i\n", v0, n);
 		return;
 	}
@@ -1184,7 +1542,7 @@ void gSPCBFDVertex( u32 a, u32 n, u32 v0 )
 }
 
 static
-void calcF3DAMTexCoords(const Vertex * _vertex, SPVertex & _vtx)
+void calcF3DAMTexCoords(const Vertex * __restrict _vertex, SPVertex & _vtx)
 {
 	const u32 s0 = (u32)_vertex->s;
 	const u32 t0 = (u32)_vertex->t;
@@ -1200,7 +1558,7 @@ void calcF3DAMTexCoords(const Vertex * _vertex, SPVertex & _vtx)
 }
 
 template <u32 VNUM>
-u32 gSPLoadF3DAMVertexData(const Vertex *orgVtx, SPVertex * spVtx, u32 v0, u32 vi, u32 n)
+u32 gSPLoadF3DAMVertexData(const Vertex * __restrict orgVtx, SPVertex * __restrict spVtx, u32 v0, u32 vi, u32 n)
 {
 	const u32 end = n - (n%VNUM) + v0;
 	for (; vi < end; vi += VNUM) {
@@ -1234,7 +1592,7 @@ void gSPF3DAMVertex(u32 a, u32 n, u32 v0)
 	DebugMsg(DEBUG_NORMAL, "gSPF3DAMVertex n = %i, v0 = %i, from %08x\n", n, v0, a);
 
 	if ((n + v0) > INDEXMAP_SIZE) {
-		LOG(LOG_ERROR, "Using Vertex outside buffer v0=%i, n=%i", v0, n);
+		LOG(LOG_ERROR, "Using Vertex outside buffer v0=%i, n=%i\n", v0, n);
 		DebugMsg(DEBUG_NORMAL | DEBUG_ERROR, "//Using Vertex outside buffer v0 = %i, n = %i\n", v0, n);
 		return;
 	}
@@ -1263,7 +1621,7 @@ void gSPF3DAMVertex(u32 a, u32 n, u32 v0)
 }
 
 template <u32 VNUM>
-u32 gSPLoadSWVertexData(const SWVertex *orgVtx, SPVertex * spVtx, u32 vi, u32 n)
+u32 gSPLoadSWVertexData(const SWVertex * __restrict orgVtx, SPVertex * __restrict spVtx, u32 vi, u32 n)
 {
 	const u32 end = n - (n%VNUM);
 	for (; vi < end; vi += VNUM) {
@@ -1283,7 +1641,7 @@ u32 gSPLoadSWVertexData(const SWVertex *orgVtx, SPVertex * spVtx, u32 vi, u32 n)
 	return vi;
 }
 
-void gSPSWVertex(const SWVertex * vertex, u32 n, const bool * const verticesToProcess)
+void gSPSWVertex(const SWVertex * __restrict vertex, u32 n, const bool * __restrict const verticesToProcess)
 {
 	DebugMsg(DEBUG_NORMAL, "gSPSWVertex n = %i\n", n);
 
@@ -1300,7 +1658,7 @@ void gSPSWVertex(const SWVertex * vertex, u32 n, const bool * const verticesToPr
 	}
 }
 
-void gSPSWVertex(const SWVertex * vertex, u32 v0, u32 n)
+void gSPSWVertex(const SWVertex * __restrict vertex, u32 v0, u32 n)
 {
 	DebugMsg(DEBUG_NORMAL, "gSPSWVertex v0 = %i, n = %i\n", v0, n);
 
@@ -1566,13 +1924,10 @@ bool gSPCullVertices( u32 v0, u32 vn )
 {
 	if (vn < v0) {
 		// Aidyn Chronicles - The First Mage seems to pass parameters in reverse order.
-		std::swap(v0, vn);
+		const u32 v = v0;
+		v0 = vn;
+		vn = v;
 	}
-
-	if (vn >= VERTBUFF_SIZE)
-		// Wrong input. DL is wrong, let's cull it.
-		return true;
-
 	u32 clip = 0;
 	GraphicsDrawer & drawer = dwnd().getDrawer();
 	for (u32 i = v0; i <= vn; ++i) {
@@ -1602,6 +1957,7 @@ void gSPCullDisplayList( u32 v0, u32 vn )
 
 void gSPPopMatrixN(u32 param, u32 num)
 {
+	gVtxLastLoadedAddress = -1;
 	if (gSP.matrix.modelViewi > num - 1) {
 		gSP.matrix.modelViewi -= num;
 		gSP.changed |= CHANGED_MATRIX | CHANGED_LIGHT | CHANGED_LOOKAT;
@@ -1615,6 +1971,7 @@ void gSPPopMatrixN(u32 param, u32 num)
 
 void gSPPopMatrix( u32 param )
 {
+	gVtxLastLoadedAddress = -1;
 	switch (param) {
 	case 0: // modelview
 		if (gSP.matrix.modelViewi > 0) {
@@ -1653,12 +2010,12 @@ void gSPRelSegment(s32 seg, s32 base)
 void gSPClipRatio(u32 ratio)
 {
 	gSP.clipRatio = std::abs(static_cast<s16>(ratio & 0xFFFF));
-	gSP.changed |= CHANGED_VIEWPORT;
 	DebugMsg(DEBUG_NORMAL, "gSPClipRatio(%u);\n", gSP.clipRatio);
 }
 
 void gSPInsertMatrix( u32 where, u32 num )
 {
+	gVtxLastLoadedAddress = -1;
 	DebugMsg(DEBUG_NORMAL, "gSPInsertMatrix(%u, %u);\n", where, num);
 
 	if ((where & 0x3) != 0)
@@ -1667,12 +2024,12 @@ void gSPInsertMatrix( u32 where, u32 num )
 	f32 * pMtx = nullptr;
 	u16 addr = (where + 0x80) & 0xFFFF;
 	if (addr < 0x40) {
-		pMtx = reinterpret_cast<f32*>(gSP.matrix.modelView[gSP.matrix.modelViewi]);
+		pMtx = reinterpret_cast<f32*>(gSP.matrix.modelView[gSP.matrix.modelViewi].v);
 	} else if (addr < 0x80) {
-		pMtx = reinterpret_cast<f32*>(gSP.matrix.projection);
+		pMtx = reinterpret_cast<f32*>(gSP.matrix.projection.v);
 		addr -= 0x40;
 	} else if (addr < 0xC0) {
-		pMtx = reinterpret_cast<f32*>(gSP.matrix.combined);
+		pMtx = reinterpret_cast<f32*>(gSP.matrix.combined.v);
 		addr -= 0x80;
 	} else
 		return;
@@ -1717,24 +2074,32 @@ void gSPModifyVertex( u32 _vtx, u32 _where, u32 _val )
 		case G_MWO_POINT_XYSCREEN:
 			vtx0.x = _FIXED2FLOAT((s16)_SHIFTR(_val, 16, 16), 2);
 			vtx0.y = _FIXED2FLOAT((s16)_SHIFTR(_val, 0, 16), 2);
-			vtx0.modify |= MODIFY_XY;
-			vtx0.clip &= ~(CLIP_POSX | CLIP_NEGX | CLIP_POSY | CLIP_NEGY);
+			DebugMsg(DEBUG_NORMAL, "gSPModifyVertex: XY(%02f, %02f);\n", vtx0.x, vtx0.y);
 			if ((config.generalEmulation.hacks & hack_ModifyVertexXyInShader) == 0) {
+				vtx0.x = (vtx0.x - gSP.viewport.vtrans[0]) / gSP.viewport.vscale[0];
+				if (gSP.viewport.vscale[0] < 0)
+					vtx0.x = -vtx0.x;
+				vtx0.x *= vtx0.w;
+
 				if (dwnd().isAdjustScreen()) {
 					const f32 adjustScale = dwnd().getAdjustScale();
-					const f32 adjustOffset = static_cast<f32>(VI.width) * (1.0f - adjustScale) / 2.0f;
 					vtx0.x *= adjustScale;
-					vtx0.x += adjustOffset;
 					if (gSP.matrix.projection[3][2] == -1.f)
 						vtx0.w *= adjustScale;
 				}
+
+				vtx0.y = -(vtx0.y - gSP.viewport.vtrans[1]) / gSP.viewport.vscale[1];
+				if (gSP.viewport.vscale[1] < 0)
+					vtx0.y = -vtx0.y;
+				vtx0.y *= vtx0.w;
 			} else {
-				if (vtx0.w == 0.0f || gDP.otherMode.depthSource == G_ZS_PRIM) {
+				vtx0.modify |= MODIFY_XY;
+				if (vtx0.w == 0.0f) {
 					vtx0.w = 1.0f;
 					vtx0.clip &= ~(CLIP_W);
 				}
 			}
-			DebugMsg(DEBUG_NORMAL, "gSPModifyVertex: XY(%02f, %02f);\n", vtx0.x, vtx0.y);
+			vtx0.clip &= ~(CLIP_POSX | CLIP_NEGX | CLIP_POSY | CLIP_NEGY);
 		break;
 		case G_MWO_POINT_ZSCREEN:
 		{
@@ -1751,6 +2116,7 @@ void gSPModifyVertex( u32 _vtx, u32 _where, u32 _val )
 
 void gSPNumLights( s32 n )
 {
+	gVtxLastLoadedAddress = -1;
 	if (n < 12) {
 		gSP.numLights = n;
 		gSP.changed |= CHANGED_LIGHT;
@@ -1763,6 +2129,7 @@ void gSPNumLights( s32 n )
 
 void gSPLightColor( u32 lightNum, u32 packedColor )
 {
+	gVtxLastLoadedAddress = -1;
 	--lightNum;
 
 	if (lightNum < 9)
@@ -1770,9 +2137,6 @@ void gSPLightColor( u32 lightNum, u32 packedColor )
 		gSP.lights.rgb[lightNum][R] = _FIXED2FLOATCOLOR(_SHIFTR( packedColor, 24, 8 ),8);
 		gSP.lights.rgb[lightNum][G] = _FIXED2FLOATCOLOR(_SHIFTR( packedColor, 16, 8 ),8);
 		gSP.lights.rgb[lightNum][B] = _FIXED2FLOATCOLOR(_SHIFTR( packedColor, 8, 8 ),8);
-		gSP.lights.rgb2[lightNum][R] = gSP.lights.rgb[lightNum][R];
-		gSP.lights.rgb2[lightNum][G] = gSP.lights.rgb[lightNum][G];
-		gSP.lights.rgb2[lightNum][B] = gSP.lights.rgb[lightNum][B];
 		gSP.changed |= CHANGED_HW_LIGHT;
 	}
 	DebugMsg(DEBUG_NORMAL, "gSPLightColor( %i, 0x%08X );\n", lightNum, packedColor );
@@ -1780,6 +2144,7 @@ void gSPLightColor( u32 lightNum, u32 packedColor )
 
 void gSPFogFactor( s16 fm, s16 fo )
 {
+	gVtxLastLoadedAddress = -1;
 	gSP.fog.multiplier = fm;
 	gSP.fog.offset = fo;
 	gSP.fog.multiplierf = _FIXED2FLOAT(fm, 8);
@@ -1794,10 +2159,65 @@ void gSPPerspNormalize( u16 scale )
 	DebugMsg(DEBUG_NORMAL| DEBUG_IGNORED, "gSPPerspNormalize( %i );\n", scale);
 }
 
+void gsSPAOAmbient(u16 amb)
+{
+	gVtxLastLoadedAddress = -1;
+	gSP.ao.amb = amb / 65536.f;
+}
+
+void gsSPAODirectional(u16 dir)
+{
+	gVtxLastLoadedAddress = -1;
+	gSP.ao.dir = dir / 65536.f;
+}
+
+void gsSPAOPoint(u16 point)
+{
+	gVtxLastLoadedAddress = -1;
+	gSP.ao.point = point / 65536.f;
+}
+
+void gsSPFresnelScale(s16 scale)
+{
+	gVtxLastLoadedAddress = -1;
+	gSP.fresnel.scale = scale / 32767.f * 256.f;
+}
+
+void gsSPFresnelOffset(s16 offset)
+{
+	gVtxLastLoadedAddress = -1;
+	gSP.fresnel.offset = offset / 32767.f * 256.f;
+}
+
+void gsSPAttrOffsetS(u16 offset)
+{
+	gVtxLastLoadedAddress = -1;
+	gSP.attrOffset.s = _FIXED2FLOAT((s16)offset, 5);
+}
+
+void gsSPAttrOffsetT(u16 offset)
+{
+	gVtxLastLoadedAddress = -1;
+	gSP.attrOffset.t = _FIXED2FLOAT((s16)offset, 5);
+}
+
+void gsSPAlphaCompareCull(u16 cfg)
+{
+	u8 mode = (cfg >> 8) & 0xff;
+	u8 thresh = cfg & 0xFF;
+	gSP.alphaCompareCull.mode = mode;
+	gSP.alphaCompareCull.thresh = thresh;
+}
+
+extern "C" uint32_t LegacySm64ToolsHacks;
 void gSPTexture( f32 sc, f32 tc, u32 level, u32 tile, u32 on )
 {
+	gVtxLastLoadedAddress = -1;
 	gSP.texture.on = on;
 	if (on == 0) {
+		if (LegacySm64ToolsHacks)
+			gDPSetCombine(0xffffff, 0xFFFE793C);
+
 		DebugMsg(DEBUG_NORMAL, "gSPTexture skipped b/c of off\n");
 		return;
 	}
@@ -1833,6 +2253,7 @@ void gSPEndDisplayList()
 
 void gSPGeometryMode( u32 clear, u32 set )
 {
+	gVtxLastLoadedAddress = -1;
 	gSP.geometryMode = (gSP.geometryMode & ~clear) | set;
 
 	gSP.changed |= CHANGED_GEOMETRYMODE;
@@ -1862,6 +2283,7 @@ void gSPGeometryMode( u32 clear, u32 set )
 
 void gSPSetGeometryMode( u32 mode )
 {
+	gVtxLastLoadedAddress = -1;
 	gSP.geometryMode |= mode;
 
 	gSP.changed |= CHANGED_GEOMETRYMODE;
@@ -1881,6 +2303,7 @@ void gSPSetGeometryMode( u32 mode )
 
 void gSPClearGeometryMode( u32 mode )
 {
+	gVtxLastLoadedAddress = -1;
 	gSP.geometryMode &= ~mode;
 
 	gSP.changed |= CHANGED_GEOMETRYMODE;
@@ -1939,11 +2362,6 @@ void gSPSetOtherMode_H(u32 _length, u32 _shift, u32 _data)
 		strRes.append((gDP.otherMode.h & 0x00010000) ? "yes | " : "no | ");
 	}
 
-	if (mask & 0x00060000) {
-		strRes.append(TextureDetailText[gDP.otherMode.textureDetail]);
-		strRes.append(" | ");
-	}
-
 	if (mask & 0x00080000) {
 		strRes.append("Persp_en : ");
 		strRes.append((gDP.otherMode.h & 0x00080000) ? "yes" : "no");
@@ -1956,6 +2374,17 @@ void gSPSetOtherMode_H(u32 _length, u32 _shift, u32 _data)
 
 void gSPSetOtherMode_L(u32 _length, u32 _shift, u32 _data)
 {
+	// Typo fixrefix
+	// !!! This is very cheesy fix
+	if (LegacySm64ToolsHacks)
+	{
+		const u32 maskH = (((u64)1 << 2) - 1) << 0x14;
+		if (!(gDP.otherMode.h & maskH) && _data == 0xC8113078)
+		{
+			_data = 0x00443078;
+		}
+	}
+
 	const u32 mask = (((u64)1 << _length) - 1) << _shift;
 	gDP.otherMode.l = (gDP.otherMode.l&(~mask)) | _data;
 
@@ -1988,11 +2417,18 @@ void gSPSetOtherMode_L(u32 _length, u32 _shift, u32 _data)
 	DebugMsg(DEBUG_NORMAL, " result: %08x\n", gDP.otherMode.l);
 }
 
-void gSPLine3D(u32 v0, u32 v1, s32 wd, u32 flag )
+void gSPLine3D( s32 v0, s32 v1, s32 flag )
 {
-	dwnd().getDrawer().drawLine(v0, v1, 1.5f + wd * 0.5f, flag);
+	dwnd().getDrawer().drawLine(v0, v1, 1.5f);
 
-	DebugMsg(DEBUG_NORMAL, "gSPLine3D( %i, %i, %i, %i )\n", v0, v1, wd, flag);
+	DebugMsg(DEBUG_NORMAL, "gSPLine3D( %i, %i, %i )\n", v0, v1, flag);
+}
+
+void gSPLineW3D( s32 v0, s32 v1, s32 wd, s32 flag )
+{
+	dwnd().getDrawer().drawLine(v0, v1, 1.5f + wd * 0.5f);
+
+	DebugMsg(DEBUG_NORMAL, "gSPLineW3D( %i, %i, %i, %i )\n", v0, v1, wd, flag);
 }
 
 void gSPSetStatus(u32 sid, u32 val)
@@ -2049,12 +2485,10 @@ void _loadSpriteImage(const uSprite *_pSprite)
 
 void gSPSprite2DBase(u32 _base)
 {
+	DebugMsg(DEBUG_NORMAL, "gSPSprite2DBase\n");
 	assert(RSP.nextCmd == 0xBE);
 	const u32 address = RSP_SegmentToPhysical( _base );
 	uSprite *pSprite = (uSprite*)&RDRAM[address];
-	DebugMsg(DEBUG_NORMAL, "gSPSprite2DBase. TextureImage( %s, %s, %i, %i, 0x%08X );\n",
-		ImageFormatText[pSprite->imageFmt], ImageSizeText[pSprite->imageSiz],
-		pSprite->imageW, pSprite->imageH, pSprite->imagePtr);
 
 	if (pSprite->tlutPtr != 0) {
 		gDPSetTextureImage( G_IM_FMT_RGBA, G_IM_SIZ_16b, 1, pSprite->tlutPtr );
@@ -2116,12 +2550,8 @@ void gSPSprite2DBase(u32 _base)
 
 		f32 uls = pSprite->imageX;
 		f32 ult = pSprite->imageY;
-		f32 lrs = uls + pSprite->imageW;
-		f32 lrt = ult + pSprite->imageH;
-		if (scaleY != 1.0f) {
-			lrs -= 1.0f;
-			lrt -= 1.0f;
-		}
+		f32 lrs = uls + pSprite->imageW - 1;
+		f32 lrt = ult + pSprite->imageH - 1;
 
 		// Hack for WCW Nitro.
 		if ((config.generalEmulation.hacks & hack_WCWNitro) != 0) {
@@ -2168,22 +2598,8 @@ void gSPSprite2DBase(u32 _base)
 
 		if (pSprite->stride > 0)
 			drawer.drawScreenSpaceTriangle(4);
-
-		DebugMsg(DEBUG_NORMAL,
-			"gSPSprite2DDraw ulx: %.02f, uly: %.02f, lrx: %.02f, lry: %.02f, z: %.02f, uls: %.02f, ult: %.02f, lrs: %.02f, lrt: %.02f\n",
-			ulx, uly, lrx, lry, z, uls, ult, lrs, lrt);
 	} while (RSP.nextCmd == 0xBD || RSP.nextCmd == 0xBE);
 }
-
-#ifndef __NEON_OPT
-void(*gSPInverseTransformVector)(float vec[3], float mtx[4][4]) = gSPInverseTransformVector_default;
-void(*gSPTransformVector)(float vtx[4], float mtx[4][4]) = gSPTransformVector_default;
-#else
-void gSPInverseTransformVector_NEON(float vec[3], float mtx[4][4]);
-void gSPTransformVector_NEON(float vtx[4], float mtx[4][4]);
-void(*gSPInverseTransformVector)(float vec[3], float mtx[4][4]) = gSPInverseTransformVector_NEON;
-void(*gSPTransformVector)(float vtx[4], float mtx[4][4]) = gSPTransformVector_NEON;
-#endif //__NEON_OPT
 
 void gSPSetupFunctions()
 {

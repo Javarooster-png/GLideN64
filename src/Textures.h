@@ -36,6 +36,7 @@ struct CachedTexture
 	u32		palette;
 	u16		width, height;			  // N64 width and height
 	u16		clampWidth, clampHeight;  // Size to clamp to
+	u16		realWidth, realHeight;	  // Actual texture size to upload
 	f32		scaleS, scaleT;			  // Scale to map to 0.0-1.0
 	f32     hdRatioS, hdRatioT;       // HD / N64 width and height
 	f32		shiftScaleS, shiftScaleT; // Scale to shift
