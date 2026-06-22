@@ -420,7 +420,11 @@ f32 renderAndDrawTriangles(const SPVertex *_pVertices,
 					maxY = std::max(maxY, vclip[k].y);
 			}
 		} else {
-			assert(modify == 0);
+			if (modify != 0) {
+				_statistics.drawnTris--;
+				_statistics.rejectedTris++;
+				continue;
+			}
 			// No screen space coordinates, so use clipping in homogeneous space.
 			SPVertex vCopy[3];
 			for (u32 k = 0; k < 3; ++k) {

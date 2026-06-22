@@ -30,7 +30,7 @@ int PluginAPI::InitiateGFX(const GFX_INFO & _gfxInfo)
 	_initiateGFX(_gfxInfo);
 	g_swapBuffers = _gfxInfo.SwapBuffers;
 	REG.SP_STATUS = _gfxInfo.SP_STATUS_REG;
-	RDRAMSize = _gfxInfo.RDRAM_SIZE;
+	RDRAMSize = _gfxInfo.RDRAM_SIZE != 0 ? _gfxInfo.RDRAM_SIZE - 1 : 0;
 	return TRUE;
 }
 

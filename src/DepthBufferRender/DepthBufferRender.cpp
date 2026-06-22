@@ -207,6 +207,8 @@ void Rasterize(vertexi * vtx, int vertices, int dzdx)
 		return;
 
 	const u16 * const zLUT = depthBufferList().getZLUT();
+	if (depthBufferList().getCurrent() == nullptr || depthBufferList().getCurrent()->m_width == 0)
+		return;
 	const s32 depthBufferWidth = static_cast<s32>(depthBufferList().getCurrent()->m_width);
 
 	for (;;) {
@@ -230,8 +232,15 @@ void Rasterize(vertexi * vtx, int vertices, int dzdx)
 				int trueZ = z / 8192;
 				if (trueZ < 0)
 					trueZ = 0;
+				else if (trueZ > 0x3FFFF)
+					trueZ = 0x3FFFF;
 				u16 encodedZ = zLUT[trueZ];
 				int idx = (shift + x) ^ 1;
+				if (idx < 0)
+					continue;
+				const u32 byteOffset = gDP.depthImageAddress + (static_cast<u32>(idx) << 1);
+				if (byteOffset + 1 > RDRAMSize)
+					continue;
 				if (encodedZ < destptr[idx])
 					destptr[idx] = encodedZ;
 				z = isumm(z, dzdx);

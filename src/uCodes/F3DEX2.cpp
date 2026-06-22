@@ -65,7 +65,7 @@ void F3DEX2_Tri1( u32 w0, u32 w1 )
 
 void F3DEX2_Line3D( u32 w0, u32 w1 )
 {
-	assert(false);
+	gSPLine3D( _SHIFTR( w0, 17, 7 ), _SHIFTR( w0, 9, 7 ), 0 );
 }
 
 void F3DEX2_PopMtx( u32 w0, u32 w1 )
@@ -206,4 +206,3 @@ void F3DEX2_Init()
 	GBI_SetGBI( G_QUAD,					F3DEX2_QUAD,				F3DEX2_Quad );
 	GBI_SetGBI( G_LINE3D,				F3DEX2_LINE3D,				F3DEX2_Line3D );
 }
-

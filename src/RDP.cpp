@@ -560,16 +560,28 @@ void RDP_Half_1( u32 _c )
 #define dp_current (*(u32*)REG.DPC_CURRENT)
 #define dp_status (*(u32*)REG.DPC_STATUS)
 
-inline u32 READ_RDP_DATA(u32 address)
+inline bool READ_RDP_DATA(u32 address, u32 & data)
 {
-	if (dp_status & 0x1)          // XBUS_DMEM_DMA enabled
-		return rsp_dmem[(address & 0xfff)>>2];
-	else
-		return rdram[(address & 0xffffff)>>2];
+	if (dp_status & 0x1) {        // XBUS_DMEM_DMA enabled
+		data = rsp_dmem[(address & 0xfff)>>2];
+		return true;
+	}
+
+	address &= 0xffffff;
+	if (address + sizeof(u32) - 1 > RDRAMSize) {
+		DebugMsg(DEBUG_NORMAL | DEBUG_ERROR, "RDP list read outside RDRAM: %08x, size %08x\n", address, RDRAMSize);
+		return false;
+	}
+
+	data = rdram[address >> 2];
+	return true;
 }
 
 void RDP_ProcessRDPList()
 {
+	if (REG.DPC_CURRENT == nullptr || REG.DPC_END == nullptr)
+		return;
+
 	if (ConfigOpen || dwnd().isResizeWindow()) {
 		dp_current = dp_end;
 		gDPFullSync();
@@ -584,7 +596,13 @@ void RDP_ProcessRDPList()
 
 	// load command data
 	for (u32 i = 0; i < length; i += 4) {
-		RDP.cmd_data[RDP.cmd_ptr] = READ_RDP_DATA(dp_current + i);
+		u32 cmdData = 0;
+		if (!READ_RDP_DATA(dp_current + i, cmdData)) {
+			if (REG.DPC_CURRENT != nullptr && REG.DPC_END != nullptr)
+				dp_current = dp_end;
+			return;
+		}
+		RDP.cmd_data[RDP.cmd_ptr] = cmdData;
 		RDP.cmd_ptr = (RDP.cmd_ptr + 1) & maxCMDMask;
 	}
 
@@ -623,5 +641,6 @@ void RDP_ProcessRDPList()
 	gDP.changed |= CHANGED_COLORBUFFER;
 	gDP.changed &= ~CHANGED_CPU_FB_WRITE;
 
-	dp_current = dp_end;
+	if (REG.DPC_CURRENT != nullptr && REG.DPC_END != nullptr)
+		dp_current = dp_end;
 }

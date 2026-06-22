@@ -223,6 +223,9 @@ void FrameBuffer::copyRdram()
 	m_cleared = false;
 
 	const u32 dataSize = stride * height;
+	const u64 endAddress = static_cast<u64>(m_startAddress) + dataSize - 1;
+	if (m_startAddress > RDRAMSize || dataSize == 0 || endAddress > RDRAMSize)
+		return;
 
 	// Auxiliary frame buffer
 	if (isAuxiliary() && config.frameBufferEmulation.copyAuxToRDRAM == 0) {
@@ -230,7 +233,12 @@ void FrameBuffer::copyRdram()
 		// This is necessary for auxilary buffers: game can restore content of RDRAM when buffer is not needed anymore
 		// Thus content of RDRAM on moment of buffer creation will be the same as when buffer becomes obsolete.
 		// Validity check will see that the RDRAM is the same and thus the buffer is valid, which is false.
-		const u32 twoPercent = max(4U, dataSize / 200);
+		u32 twoPercent = max(4U, dataSize / 200);
+		const u32 maxWords = (RDRAMSize - m_startAddress + 1) >> 2;
+		if (twoPercent > maxWords)
+			twoPercent = maxWords;
+		if (twoPercent == 0)
+			return;
 		u32 start = m_startAddress >> 2;
 		u32 * pData = reinterpret_cast<u32*>(RDRAM);
 		for (u32 i = 0; i < twoPercent; ++i) {

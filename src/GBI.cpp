@@ -203,14 +203,14 @@ void GBIInfo::_makeCurrent(MicrocodeInfo * _pCurrent)
 		LegacySm64ToolsHacks = _pCurrent->type == F3D && _pCurrent->sm64;
 		switch (config.generalEmulation.enableFragmentDepthWrite)
 		{
-			case Config::FragDepthWriteMode::adaptive:
-				DepthFragmentWrite = !LegacySm64ToolsHacks;
+			case 0:
+				DepthFragmentWrite = false;
 				break;
-			case Config::FragDepthWriteMode::enabled:
+			case 1:
 				DepthFragmentWrite = true;
 				break;
-			case Config::FragDepthWriteMode::disabled:
-				DepthFragmentWrite = false;
+			default:
+				DepthFragmentWrite = !LegacySm64ToolsHacks;
 				break;
 		}
 
@@ -562,6 +562,21 @@ void GBIInfo::loadMicrocode(u32 uc_start, u32 uc_dstart, u16 uc_dsize)
 		}
 	}
 
-	assert(false && "unknown ucode!!!'n");
+	if (strstr(RSP.romname, "ZELDA") != nullptr || strstr(RSP.romname, "Zelda") != nullptr) {
+		LOG(LOG_ERROR, "[GLideN64]: unknown Zelda ucode crc=0x%08x name=%s romname=%s, falling back to F3DZEX2OOT\n",
+			uc_crc, uc_str, RSP.romname);
+		current.type = F3DZEX2OOT;
+		current.NoN = true;
+		current.negativeY = true;
+		current.fast3DPersp = false;
+		current.combineMatrices = false;
+	} else {
+		LOG(LOG_ERROR, "[GLideN64]: unknown ucode crc=0x%08x name=%s romname=%s, falling back to F3DEX2\n",
+			uc_crc, uc_str, RSP.romname);
+		current.type = F3DEX2;
+		current.NoN = false;
+		current.negativeY = false;
+		current.fast3DPersp = true;
+	}
 	_makeCurrent(&current);
 }

@@ -242,6 +242,9 @@ static void checkHotkeys()
 
 void VI_UpdateScreen()
 {
+	if (REG.VI_ORIGIN == nullptr || REG.VI_WIDTH == nullptr)
+		return;
+
 	if (VI.lastOrigin == -1) // Workaround for Mupen64Plus issue with initialization
 		gfxContext.isError();
 
